@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 — 持仓追踪{% endblock %}
+
+{% block content %}
+<h5 class="text-muted mb-3">投资组合总览</h5>
+
+<!-- Summary cards -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="card summary-card h-100 border-0 shadow-sm">
+      <div class="card-body">
+        <div class="card-label">总资产（人民币）</div>
+        <div class="card-value">¥{{ total_value | fmt_num(0) }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card summary-card h-100 border-0 shadow-sm">
+      <div class="card-body">
+        <div class="card-label">总成本（人民币）</div>
+        <div class="card-value">¥{{ total_cost | fmt_num(0) }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card summary-card h-100 border-0 shadow-sm">
+      <div class="card-body">
+        <div class="card-label">浮动盈亏</div>
+        <div class="card-value {{ total_pnl | pnl_class }}">
+          ¥{{ total_pnl | fmt_num(0) }}
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card summary-card h-100 border-0 shadow-sm">
+      <div class="card-body">
+        <div class="card-label">盈亏比例</div>
+        <div class="card-value {{ total_pnl_pct | pnl_class }}">
+          {{ total_pnl_pct | fmt_pct }}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Charts row -->
+{% if rows %}
+<div class="row g-3 mb-4">
+  <div class="col-md-5">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-header bg-white border-0 fw-semibold">资产分配</div>
+      <div class="card-body">
+        <div class="chart-container">
+          <canvas id="pieChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-7">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-header bg-white border-0 fw-semibold">持仓市值（人民币）</div>
+      <div class="card-body">
+        <div class="chart-container">
+          <canvas id="barChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Top holdings table -->
+<div class="card border-0 shadow-sm">
+  <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
+    <span class="fw-semibold">持仓概览（前 {{ rows | length }} 项）</span>
+    <a href="{{ url_for('holdings_list') }}" class="btn btn-sm btn-outline-secondary">
+      查看全部 {{ holding_count }} 项 →
+    </a>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>名称</th>
+            <th>代码</th>
+            <th>市场</th>
+            <th>标签</th>
+            <th class="text-end">持有量</th>
+            <th class="text-end">现价</th>
+            <th class="text-end">市值 (¥)</th>
+            <th class="text-end">盈亏</th>
+            <th class="text-end">盈亏%</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td>
+              {{ r.name }}
+              {% if r.is_manual %}<span class="badge bg-warning text-dark badge-manual ms-1">手动</span>{% endif %}
+            </td>
+            <td><code>{{ r.symbol }}</code></td>
+            <td><span class="badge bg-secondary">{{ r.market }}</span></td>
+            <td>
+              {% for tag in r.tags %}
+                <span class="badge bg-info text-dark me-1">{{ tag }}</span>
+              {% endfor %}
+            </td>
+            <td class="text-end">{{ r.quantity | fmt_num(4) }}</td>
+            <td class="text-end">
+              {% if r.current_price is not none %}
+                {{ r.current_price | fmt_num }}
+                <small class="text-muted">{{ r.currency }}</small>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            <td class="text-end">{{ r.market_value_cny | fmt_num(0) }}</td>
+            <td class="text-end {{ r.pnl_cny | pnl_class }}">{{ r.pnl_cny | fmt_num(0) }}</td>
+            <td class="text-end {{ r.pnl_pct | pnl_class }}">{{ r.pnl_pct | fmt_pct }}</td>
+            <td>
+              <a href="{{ url_for('holding_edit', holding_id=r.id) }}"
+                 class="btn btn-sm btn-outline-primary">编辑</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="text-center text-muted py-5">
+  <p class="fs-5">还没有持仓</p>
+  <a href="{{ url_for('holding_add') }}" class="btn btn-primary">添加第一笔持仓</a>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if rows %}
+<script>
+async function loadCharts() {
+  const resp = await fetch('/api/portfolio-data');
+  const data = await resp.json();
+
+  // Pie chart
+  new Chart(document.getElementById('pieChart'), {
+    type: 'doughnut',
+    data: {
+      labels: data.labels,
+      datasets: [{ data: data.values, backgroundColor: data.colors, borderWidth: 1 }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 14 } },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ¥${ctx.parsed.toLocaleString('zh-CN', {maximumFractionDigits: 0})}`
+          }
+        }
+      }
+    }
+  });
+
+  // Bar chart (horizontal)
+  new Chart(document.getElementById('barChart'), {
+    type: 'bar',
+    data: {
+      labels: data.labels.map(l => l.length > 12 ? l.slice(0, 12) + '…' : l),
+      datasets: [{
+        label: '市值 (¥)',
+        data: data.values,
+        backgroundColor: data.colors,
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ¥${ctx.parsed.x.toLocaleString('zh-CN', {maximumFractionDigits: 0})}`
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { callback: v => '¥' + (v >= 1000 ? (v/1000).toFixed(0)+'k' : v) }
+        }
+      }
+    }
+  });
+}
+loadCharts();
+</script>
+{% endif %}
+{% endblock %}

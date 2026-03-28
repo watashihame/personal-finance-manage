@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}{{ '编辑持仓' if action == 'edit' else '添加持仓' }} — 持仓追踪{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-7 col-lg-6">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-0 fw-semibold">
+        {{ '编辑持仓' if action == 'edit' else '添加持仓' }}
+      </div>
+      <div class="card-body">
+        <form method="POST">
+          <!-- Name -->
+          <div class="mb-3">
+            <label class="form-label">名称 <span class="text-danger">*</span></label>
+            <input type="text" class="form-control" name="name" required
+                   value="{{ holding.name if holding else '' }}"
+                   placeholder="如：贵州茅台、Apple Inc.">
+          </div>
+
+          <!-- Symbol -->
+          <div class="mb-3">
+            <label class="form-label">代码 <span class="text-danger">*</span></label>
+            <input type="text" class="form-control font-monospace" name="symbol" required
+                   value="{{ holding.symbol if holding else '' }}"
+                   placeholder="如：600519.SH / 000001.SZ / AAPL / 7203.T / BTC-USD"
+                   id="symbol-input">
+            <div class="form-text">
+              A股：<code>600519.SH</code>（沪）/ <code>000001.SZ</code>（深）&nbsp;
+              美股：<code>AAPL</code>&nbsp;
+              日股：<code>7203.T</code>&nbsp;
+              加密：<code>BTC-USD</code>
+            </div>
+          </div>
+
+          <!-- Market + Asset Type (side by side) -->
+          <div class="row mb-3">
+            <div class="col-6">
+              <label class="form-label">市场 <span class="text-danger">*</span></label>
+              <select class="form-select" name="market" id="market-select" required>
+                {% for m in markets %}
+                  <option value="{{ m }}"
+                    {{ 'selected' if holding and holding.market == m else '' }}>
+                    {{ {'CN':'A股 (CN)', 'US':'美股 (US)', 'JP':'日股 (JP)',
+                        'CRYPTO':'加密货币', 'OTHER':'其他'}.get(m, m) }}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-6">
+              <label class="form-label">类型 <span class="text-danger">*</span></label>
+              <select class="form-select" name="asset_type" required>
+                {% for t in asset_types %}
+                  <option value="{{ t }}"
+                    {{ 'selected' if holding and holding.asset_type == t else '' }}>
+                    {{ {'stock':'股票','etf':'ETF','fund':'基金','bond':'债券',
+                        'crypto':'加密货币','other':'其他'}.get(t, t) }}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <!-- Currency -->
+          <div class="mb-3">
+            <label class="form-label">货币 <span class="text-danger">*</span></label>
+            <select class="form-select" name="currency" id="currency-select" required>
+              {% for c in currencies %}
+                <option value="{{ c }}"
+                  {{ 'selected' if holding and holding.currency == c else '' }}>
+                  {{ c }}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <!-- Quantity + Cost price (side by side) -->
+          <div class="row mb-3">
+            <div class="col-6">
+              <label class="form-label">持有数量 <span class="text-danger">*</span></label>
+              <input type="number" class="form-control" name="quantity" required
+                     step="0.0001" min="0.0001"
+                     value="{{ holding.quantity if holding else '' }}"
+                     placeholder="如：100">
+            </div>
+            <div class="col-6">
+              <label class="form-label">平均成本价 <span class="text-danger">*</span></label>
+              <input type="number" class="form-control" name="cost_price" required
+                     step="0.0001" min="0"
+                     value="{{ holding.cost_price if holding else '' }}"
+                     placeholder="如：1800.00">
+            </div>
+          </div>
+
+          <!-- Tags -->
+          <div class="mb-3">
+            <label class="form-label">标签</label>
+            <input type="text" class="form-control" name="tags" id="tags-input"
+                   value="{{ holding.tags if holding else '' }}"
+                   placeholder="如：科技,长期持有,核心仓位">
+            <div class="form-text">多个标签用英文逗号分隔</div>
+            <div id="tags-preview" class="mt-2"></div>
+          </div>
+
+          <!-- Notes -->
+          <div class="mb-4">
+            <label class="form-label">备注</label>
+            <textarea class="form-control" name="notes" rows="2"
+                      placeholder="可选">{{ holding.notes if holding else '' }}</textarea>
+          </div>
+
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary">
+              {{ '保存修改' if action == 'edit' else '添加持仓' }}
+            </button>
+            <a href="{{ url_for('holdings_list') }}" class="btn btn-outline-secondary">取消</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Market → default currency mapping
+const marketCurrency = {{ market_currency_default | tojson }};
+
+const marketSelect = document.getElementById('market-select');
+const currencySelect = document.getElementById('currency-select');
+const symbolInput = document.getElementById('symbol-input');
+
+{% if not holding %}
+// Only auto-set currency for new holdings
+marketSelect.addEventListener('change', () => {
+  const defaultCurrency = marketCurrency[marketSelect.value] || 'CNY';
+  for (const opt of currencySelect.options) {
+    if (opt.value === defaultCurrency) { opt.selected = true; break; }
+  }
+});
+{% endif %}
+
+// Tags live preview
+const tagsInput = document.getElementById('tags-input');
+const tagsPreview = document.getElementById('tags-preview');
+function renderTagsPreview() {
+  const tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
+  tagsPreview.innerHTML = tags.map(t =>
+    `<span class="badge bg-info text-dark me-1">${t}</span>`
+  ).join('');
+}
+tagsInput.addEventListener('input', renderTagsPreview);
+renderTagsPreview();
+
+// Auto-detect market from symbol suffix
+symbolInput.addEventListener('blur', () => {
+  {% if not holding %}
+  const sym = symbolInput.value.trim().toUpperCase();
+  let market = null;
+  if (sym.endsWith('.SH') || sym.endsWith('.SZ')) market = 'CN';
+  else if (sym.endsWith('.T')) market = 'JP';
+  else if (sym.includes('-USD') || sym.includes('-USDT')) market = 'CRYPTO';
+  else if (sym.length > 0) market = 'US';
+
+  if (market) {
+    for (const opt of marketSelect.options) {
+      if (opt.value === market) { opt.selected = true; break; }
+    }
+    const defaultCurrency = marketCurrency[market] || 'CNY';
+    for (const opt of currencySelect.options) {
+      if (opt.value === defaultCurrency) { opt.selected = true; break; }
+    }
+  }
+  {% endif %}
+});
+</script>
+{% endblock %}

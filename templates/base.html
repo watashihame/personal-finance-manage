@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}投资持仓{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="bg-light">
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+  <div class="container-fluid">
+    <a class="navbar-brand fw-bold" href="{{ url_for('index') }}">📊 持仓追踪</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMenu">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navMenu">
+      <ul class="navbar-nav me-auto">
+        <li class="nav-item">
+          <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}"
+             href="{{ url_for('index') }}">仪表盘</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.endpoint in ('holdings_list',) %}active{% endif %}"
+             href="{{ url_for('holdings_list') }}">持仓列表</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.endpoint == 'holding_add' %}active{% endif %}"
+             href="{{ url_for('holding_add') }}">+ 添加持仓</a>
+        </li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid mt-3 mb-5 px-4">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, msg in messages %}
+      <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+        {{ msg }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      </div>
+    {% endfor %}
+  {% endwith %}
+
+  {% block content %}{% endblock %}
+</div>
+
+<!-- Floating refresh button -->
+<button id="refresh-btn" class="btn btn-primary" onclick="refreshPrices()">
+  <span id="refresh-icon">⟳</span>
+  <span id="refresh-text">刷新价格</span>
+</button>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+async function refreshPrices() {
+  const btn = document.getElementById('refresh-btn');
+  const icon = document.getElementById('refresh-icon');
+  const text = document.getElementById('refresh-text');
+  btn.disabled = true;
+  icon.textContent = '⏳';
+  text.textContent = '刷新中…';
+
+  try {
+    const resp = await fetch('/api/refresh-prices', { method: 'POST' });
+    const data = await resp.json();
+    if (data.failed > 0) {
+      alert(`刷新完成：成功 ${data.updated} 个，失败 ${data.failed} 个\n${data.errors.join('\n')}`);
+    }
+    window.location.reload();
+  } catch (e) {
+    alert('刷新失败：' + e.message);
+    btn.disabled = false;
+    icon.textContent = '⟳';
+    text.textContent = '刷新价格';
+  }
+}
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,45 @@
+services:
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-portfolio}
+      POSTGRES_USER: ${POSTGRES_USER:-portfolio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-portfolio} -d ${POSTGRES_DB:-portfolio}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-portfolio}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-portfolio}
+      SECRET_KEY: ${SECRET_KEY}
+      TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Mount static dir so nginx can serve it directly
+      - static_files:/app/static
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - static_files:/app/static:ro
+    depends_on:
+      - web
+
+volumes:
+  postgres_data:
+  static_files:

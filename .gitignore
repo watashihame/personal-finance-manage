@@ -1,0 +1,6 @@
+.env
+config.ini
+portfolio.db
+__pycache__/
+*.pyc
+*.pyo

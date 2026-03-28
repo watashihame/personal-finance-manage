@@ -1,0 +1,47 @@
+/* P&L colors */
+.pnl-positive { color: #198754; font-weight: 600; }
+.pnl-negative { color: #dc3545; font-weight: 600; }
+
+/* Dashboard summary cards */
+.summary-card .card-value {
+    font-size: 1.75rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+.summary-card .card-label {
+    font-size: 0.8rem;
+    color: #6c757d;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Chart containers */
+.chart-container {
+    position: relative;
+    height: 280px;
+}
+
+/* Floating refresh button */
+#refresh-btn {
+    position: fixed;
+    bottom: 2rem;
+    right: 2rem;
+    z-index: 1000;
+    border-radius: 50px;
+    padding: 0.55rem 1.3rem;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+
+/* Table tweaks */
+.table th { white-space: nowrap; }
+.table td { vertical-align: middle; }
+
+/* Sort link */
+.sort-link { text-decoration: none; color: inherit; }
+.sort-link:hover { text-decoration: underline; }
+
+/* Manual badge */
+.badge-manual {
+    font-size: 0.65rem;
+    vertical-align: middle;
+}
