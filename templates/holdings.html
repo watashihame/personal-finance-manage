@@ -30,17 +30,17 @@
 <div class="row g-2 mb-3">
   <div class="col-auto">
     <span class="badge bg-light text-dark border fs-6 px-3 py-2">
-      总市值 <strong>¥{{ total_value | fmt_num(0) }}</strong>
+      总市值 <strong>¥{{ total_value | fmt_num(2) }}</strong>
     </span>
   </div>
   <div class="col-auto">
     <span class="badge bg-light text-dark border fs-6 px-3 py-2">
-      总成本 <strong>¥{{ total_cost | fmt_num(0) }}</strong>
+      总成本 <strong>¥{{ total_cost | fmt_num(2) }}</strong>
     </span>
   </div>
   <div class="col-auto">
     <span class="badge bg-light border fs-6 px-3 py-2 {{ total_pnl | pnl_class }}">
-      浮盈 <strong>¥{{ total_pnl | fmt_num(0) }}</strong>
+      浮盈 <strong>¥{{ total_pnl | fmt_num(2) }}</strong>
     </span>
   </div>
 </div>
@@ -68,6 +68,7 @@
             <th class="text-end">{{ sort_link('持有量', 'quantity') }}</th>
             <th class="text-end">{{ sort_link('成本价', 'cost_price') }}</th>
             <th class="text-end">{{ sort_link('现价', 'current_price') }}</th>
+            <th class="text-end">日涨跌</th>
             <th class="text-end">{{ sort_link('市值 (¥)', 'market_value_cny') }}</th>
             <th class="text-end">成本 (¥)</th>
             <th class="text-end">{{ sort_link('盈亏 (¥)', 'pnl_pct') }}</th>
@@ -79,7 +80,8 @@
           {% for r in rows %}
           <tr>
             <td>
-              {{ r.name }}
+              <a href="#" class="text-decoration-none text-dark"
+                 onclick="showChart('{{ r.symbol }}', '{{ r.name }}'); return false;">{{ r.name }}</a>
               {% if r.is_manual %}
                 <span class="badge bg-warning text-dark badge-manual ms-1"
                       title="手动价格 — 自动刷新已暂停">手动</span>
@@ -110,10 +112,17 @@
                 <span class="text-muted">—</span>
               {% endif %}
             </td>
-            <td class="text-end fw-semibold">¥{{ r.market_value_cny | fmt_num(0) }}</td>
-            <td class="text-end text-muted">¥{{ r.cost_cny | fmt_num(0) }}</td>
+            <td class="text-end {{ r.daily_change_pct | pnl_class }}">
+              {% if r.daily_change_pct is not none %}
+                {{ r.daily_change_pct | fmt_pct }}
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            <td class="text-end fw-semibold">¥{{ r.market_value_cny | fmt_num(2) }}</td>
+            <td class="text-end text-muted">¥{{ r.cost_cny | fmt_num(2) }}</td>
             <td class="text-end {{ r.pnl_cny | pnl_class }}">
-              {{ r.pnl_cny | fmt_num(0) }}
+              {{ r.pnl_cny | fmt_num(2) }}
             </td>
             <td class="text-end {{ r.pnl_pct | pnl_class }}">
               {{ r.pnl_pct | fmt_pct }}
@@ -149,6 +158,22 @@
 </div>
 {% endif %}
 
+<!-- Price chart modal -->
+<div class="modal fade" id="chartModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title" id="chartModalTitle">走势图</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="chartNoData" class="text-center text-muted py-4" style="display:none">暂无历史价格数据，刷新行情后将开始记录</div>
+        <canvas id="priceChart" height="100"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Manual price override modal -->
 <div class="modal fade" id="overrideModal" tabindex="-1">
   <div class="modal-dialog modal-sm">
@@ -182,6 +207,53 @@
 
 {% block scripts %}
 <script>
+let chartModal, priceChartInstance;
+document.addEventListener('DOMContentLoaded', () => {
+  chartModal = new bootstrap.Modal(document.getElementById('chartModal'));
+});
+
+async function showChart(symbol, name) {
+  document.getElementById('chartModalTitle').textContent = name + ' (' + symbol + ') 历史走势';
+  document.getElementById('chartNoData').style.display = 'none';
+  document.getElementById('priceChart').style.display = 'none';
+  chartModal.show();
+
+  const resp = await fetch('/api/price-history/' + encodeURIComponent(symbol));
+  const data = await resp.json();
+
+  if (!data.dates || data.dates.length === 0) {
+    document.getElementById('chartNoData').style.display = 'block';
+    return;
+  }
+
+  document.getElementById('priceChart').style.display = 'block';
+  if (priceChartInstance) priceChartInstance.destroy();
+  priceChartInstance = new Chart(document.getElementById('priceChart'), {
+    type: 'line',
+    data: {
+      labels: data.dates,
+      datasets: [{
+        label: symbol + ' (' + data.currency + ')',
+        data: data.prices,
+        borderColor: '#4e79a7',
+        backgroundColor: 'rgba(78,121,167,0.08)',
+        borderWidth: 2,
+        pointRadius: data.dates.length > 60 ? 0 : 3,
+        fill: true,
+        tension: 0.1,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 8 } },
+        y: { ticks: { callback: v => v.toLocaleString() } }
+      }
+    }
+  });
+}
+
 let overrideModal;
 document.addEventListener('DOMContentLoaded', () => {
   overrideModal = new bootstrap.Modal(document.getElementById('overrideModal'));

@@ -22,6 +22,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-portfolio}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-portfolio}
       SECRET_KEY: ${SECRET_KEY}
       TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+      ACCESS_TOKEN: ${ACCESS_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy

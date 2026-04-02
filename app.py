@@ -1,11 +1,14 @@
 import logging
 import os
+import secrets
 from datetime import datetime, timezone, timedelta
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
-from sqlalchemy import select
+from datetime import date as dt_date
 
-from models import init_db, get_session, Holding, PriceCache, ExchangeRate
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
+from sqlalchemy import select, func
+
+from models import init_db, get_session, Holding, PriceCache, ExchangeRate, PriceHistory
 from price_fetcher import (
     refresh_all_prices,
     set_manual_price,
@@ -18,6 +21,7 @@ logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-prod")
+ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN", "").strip()
 
 init_db()
 
@@ -35,10 +39,30 @@ MARKET_CURRENCY_DEFAULT = {
 
 
 # ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+@app.before_request
+def require_auth():
+    if not ACCESS_TOKEN:
+        return
+    if request.endpoint in ("login", "logout", "static"):
+        return
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and secrets.compare_digest(auth[7:], ACCESS_TOKEN):
+        return
+    if session.get("authenticated"):
+        return
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Unauthorized"}), 401
+    return redirect(url_for("login", next=request.path))
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _compute_portfolio(holdings, prices: dict, rates: dict) -> tuple[list[dict], float, float]:
+def _compute_portfolio(holdings, prices: dict, rates: dict, prev_prices: dict) -> tuple[list[dict], float, float]:
     """
     Compute per-holding rows and totals.
     Returns (rows, total_value_cny, total_cost_cny).
@@ -61,6 +85,12 @@ def _compute_portfolio(holdings, prices: dict, rates: dict) -> tuple[list[dict],
         pnl_cny = market_value_cny - cost_cny
         pnl_pct = (pnl_cny / cost_cny * 100) if cost_cny else 0.0
 
+        prev_price = prev_prices.get(h.symbol)
+        if current_price is not None and prev_price and prev_price > 0:
+            daily_change_pct = (current_price - prev_price) / prev_price * 100
+        else:
+            daily_change_pct = None
+
         raw_tags = h.tags or ""
         tag_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
 
@@ -78,6 +108,7 @@ def _compute_portfolio(holdings, prices: dict, rates: dict) -> tuple[list[dict],
             "cost_cny": cost_cny,
             "pnl_cny": pnl_cny,
             "pnl_pct": pnl_pct,
+            "daily_change_pct": daily_change_pct,
             "tags": tag_list,
             "is_manual": pc.is_manual if pc else False,
             "price_stale": (
@@ -107,7 +138,20 @@ def _load_portfolio_data():
         }
         rates["CNY"] = 1.0
 
-        rows, total_value, total_cost = _compute_portfolio(holdings, price_map, rates)
+        today = dt_date.today()
+        subq = (
+            select(PriceHistory.symbol, func.max(PriceHistory.date).label("prev_date"))
+            .where(PriceHistory.date < today)
+            .group_by(PriceHistory.symbol)
+            .subquery()
+        )
+        prev_rows = session.execute(
+            select(PriceHistory.symbol, PriceHistory.price)
+            .join(subq, (PriceHistory.symbol == subq.c.symbol) & (PriceHistory.date == subq.c.prev_date))
+        ).all()
+        prev_prices = {row.symbol: row.price for row in prev_rows}
+
+        rows, total_value, total_cost = _compute_portfolio(holdings, price_map, rates, prev_prices)
         return rows, total_value, total_cost
     finally:
         session.close()
@@ -116,6 +160,28 @@ def _load_portfolio_data():
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not ACCESS_TOKEN:
+        return redirect(url_for("index"))
+    if request.method == "POST":
+        token = request.form.get("token", "")
+        if secrets.compare_digest(token, ACCESS_TOKEN):
+            session["authenticated"] = True
+            next_url = request.args.get("next", "")
+            if next_url.startswith("/") and not next_url.startswith("//"):
+                return redirect(next_url)
+            return redirect(url_for("index"))
+        flash("Token 不正确", "danger")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
 
 @app.route("/")
 def index():
@@ -326,6 +392,26 @@ def api_portfolio_data():
     values = [round(r["market_value_cny"], 2) for r in rows_sorted]
     colors = [CHART_COLORS[i % len(CHART_COLORS)] for i in range(len(rows_sorted))]
     return jsonify({"labels": labels, "values": values, "colors": colors})
+
+
+@app.route("/api/price-history/<symbol>")
+def api_price_history(symbol: str):
+    symbol = symbol.upper()
+    session_db = get_session()
+    try:
+        rows = session_db.execute(
+            select(PriceHistory)
+            .where(PriceHistory.symbol == symbol)
+            .order_by(PriceHistory.date)
+        ).scalars().all()
+        return jsonify({
+            "symbol": symbol,
+            "dates": [r.date.isoformat() for r in rows],
+            "prices": [r.price for r in rows],
+            "currency": rows[-1].currency if rows else "",
+        })
+    finally:
+        session_db.close()
 
 
 @app.route("/api/holdings/search")

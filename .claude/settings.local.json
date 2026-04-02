@@ -15,7 +15,11 @@
       "Bash(docker compose:*)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost/mcp)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" -X POST http://localhost/mcp -H \"Content-Type: application/json\" -d '{\"\"jsonrpc\"\":\"\"2.0\"\",\"\"method\"\":\"\"initialize\"\",\"\"id\"\":1}')",
-      "Bash(curl -s -w \"\\\\nHTTP: %{http_code}\\\\n\" -X POST http://localhost/mcp -H \"Content-Type: application/json\" -H \"Accept: application/json, text/event-stream\" -d '{\"\"jsonrpc\"\":\"\"2.0\"\",\"\"method\"\":\"\"initialize\"\",\"\"params\"\":{\"\"protocolVersion\"\":\"\"2024-11-05\"\",\"\"capabilities\"\":{},\"\"clientInfo\"\":{\"\"name\"\":\"\"test\"\",\"\"version\"\":\"\"1.0\"\"}},\"\"id\"\":1}')"
+      "Bash(curl -s -w \"\\\\nHTTP: %{http_code}\\\\n\" -X POST http://localhost/mcp -H \"Content-Type: application/json\" -H \"Accept: application/json, text/event-stream\" -d '{\"\"jsonrpc\"\":\"\"2.0\"\",\"\"method\"\":\"\"initialize\"\",\"\"params\"\":{\"\"protocolVersion\"\":\"\"2024-11-05\"\",\"\"capabilities\"\":{},\"\"clientInfo\"\":{\"\"name\"\":\"\"test\"\",\"\"version\"\":\"\"1.0\"\"}},\"\"id\"\":1}')",
+      "Bash(docker compose exec web python -c \":*)",
+      "Bash(ls /root/personal-finance/.env*)",
+      "Bash(curl -s \"https://hq.sinajs.cn/list=nf_AU9999\" -H \"Referer: https://finance.sina.com.cn/\")",
+      "Bash(curl -s \"https://push2.eastmoney.com/api/qt/stock/get?secid=113.AU0&fields=f43,f58,f152,f170\" -H \"Referer: https://quote.eastmoney.com/\" -H \"User-Agent: Mozilla/5.0\")"
     ]
   }
 }

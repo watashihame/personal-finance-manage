@@ -10,7 +10,7 @@
     <div class="card summary-card h-100 border-0 shadow-sm">
       <div class="card-body">
         <div class="card-label">总资产（人民币）</div>
-        <div class="card-value">¥{{ total_value | fmt_num(0) }}</div>
+        <div class="card-value">¥{{ total_value | fmt_num(2) }}</div>
       </div>
     </div>
   </div>
@@ -18,7 +18,7 @@
     <div class="card summary-card h-100 border-0 shadow-sm">
       <div class="card-body">
         <div class="card-label">总成本（人民币）</div>
-        <div class="card-value">¥{{ total_cost | fmt_num(0) }}</div>
+        <div class="card-value">¥{{ total_cost | fmt_num(2) }}</div>
       </div>
     </div>
   </div>
@@ -27,7 +27,7 @@
       <div class="card-body">
         <div class="card-label">浮动盈亏</div>
         <div class="card-value {{ total_pnl | pnl_class }}">
-          ¥{{ total_pnl | fmt_num(0) }}
+          ¥{{ total_pnl | fmt_num(2) }}
         </div>
       </div>
     </div>
@@ -117,8 +117,8 @@
                 <span class="text-muted">—</span>
               {% endif %}
             </td>
-            <td class="text-end">{{ r.market_value_cny | fmt_num(0) }}</td>
-            <td class="text-end {{ r.pnl_cny | pnl_class }}">{{ r.pnl_cny | fmt_num(0) }}</td>
+            <td class="text-end">{{ r.market_value_cny | fmt_num(2) }}</td>
+            <td class="text-end {{ r.pnl_cny | pnl_class }}">{{ r.pnl_cny | fmt_num(2) }}</td>
             <td class="text-end {{ r.pnl_pct | pnl_class }}">{{ r.pnl_pct | fmt_pct }}</td>
             <td>
               <a href="{{ url_for('holding_edit', holding_id=r.id) }}"

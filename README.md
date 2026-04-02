@@ -104,9 +104,47 @@ token = your_tushare_token_here
 | `POSTGRES_PASSWORD` | 是 | — | PostgreSQL 密码 |
 | `SECRET_KEY` | 是 | — | Flask Session 密钥 |
 | `TUSHARE_TOKEN` | 否 | — | A 股行情 Token，不填则 A 股无法自动刷新 |
+| `ACCESS_TOKEN` | 否 | — | 访问鉴权 Token，设置后全站强制要求登录，留空则关闭鉴权 |
 | `POSTGRES_DB` | 否 | `portfolio` | 数据库名 |
 | `POSTGRES_USER` | 否 | `portfolio` | 数据库用户名 |
 | `NGINX_PORT` | 否 | `80` | Nginx 监听端口 |
+
+## 访问鉴权
+
+在 `.env` 中设置 `ACCESS_TOKEN` 即可开启全站鉴权：
+
+```ini
+ACCESS_TOKEN=your_strong_token_here
+```
+
+设置后重新构建生效：
+
+```bash
+docker compose up -d --build web
+```
+
+### 网页访问
+
+浏览器打开应用时会自动跳转到登录页，输入 `ACCESS_TOKEN` 的值即可登录。登录后 navbar 右上角有"退出"按钮。
+
+### API / MCP 访问
+
+外部脚本或 OpenClaw 等 Agent 调用 REST API 时，在请求头中携带 Bearer Token：
+
+```
+Authorization: Bearer your_strong_token_here
+```
+
+示例：
+
+```bash
+curl -X POST http://localhost/api/refresh-prices \
+  -H "Authorization: Bearer your_strong_token_here"
+```
+
+MCP Server（stdio 模式）直连数据库，不经过 HTTP，无需 Token。
+
+---
 
 ## 常用命令
 

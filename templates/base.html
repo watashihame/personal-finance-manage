@@ -30,6 +30,9 @@
              href="{{ url_for('holding_add') }}">+ 添加持仓</a>
         </li>
       </ul>
+      {% if session.get('authenticated') %}
+      <a class="nav-link text-secondary ms-3" href="{{ url_for('logout') }}">退出</a>
+      {% endif %}
     </div>
   </div>
 </nav>

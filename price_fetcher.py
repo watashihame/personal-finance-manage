@@ -1,5 +1,7 @@
 import logging
 import os
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 
 import requests
@@ -37,6 +39,12 @@ def _is_japanese(symbol: str) -> bool:
 
 def _is_crypto(symbol: str) -> bool:
     return "-USD" in symbol.upper() or "-USDT" in symbol.upper()
+
+
+def _is_cn_fund(symbol: str) -> bool:
+    """六位数字（含或不含 .OF 后缀）= A 股开放式基金"""
+    return bool(re.match(r'^\d{6}(\.OF)?$', symbol, re.IGNORECASE))
+
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +149,43 @@ def _fetch_tushare(symbols: list[str]) -> dict[str, float | None]:
 
 
 # ---------------------------------------------------------------------------
+# CN open-end fund NAV via 天天基金网 (eastmoney) — free, no token required
+# ---------------------------------------------------------------------------
+
+_EASTMONEY_HEADERS = {"Referer": "https://fundf10.eastmoney.com/"}
+_EASTMONEY_URL = "https://api.fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex=1&pageSize=1"
+
+
+def _fetch_one_eastmoney(sym: str) -> tuple[str, float | None]:
+    code = re.sub(r'\.OF$', '', sym, flags=re.IGNORECASE)
+    for attempt in range(2):
+        try:
+            resp = requests.get(
+                _EASTMONEY_URL.format(code=code),
+                headers=_EASTMONEY_HEADERS,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            lst = resp.json().get("Data", {}).get("LSJZList", [])
+            return sym, float(lst[0]["DWJZ"]) if lst else None
+        except Exception as exc:
+            if attempt == 1:
+                logger.warning("eastmoney fund_nav failed for %s: %s", sym, exc)
+    return sym, None
+
+
+def _fetch_eastmoney_fund(symbols: list[str]) -> dict[str, float | None]:
+    """Fetch unit NAV (单位净值) from eastmoney concurrently for each fund symbol."""
+    results: dict[str, float | None] = {}
+    with ThreadPoolExecutor(max_workers=min(len(symbols), 8)) as pool:
+        futures = {pool.submit(_fetch_one_eastmoney, sym): sym for sym in symbols}
+        for future in as_completed(futures):
+            sym, price = future.result()
+            results[sym] = price
+    return results
+
+
+# ---------------------------------------------------------------------------
 # US / JP / Crypto prices via yfinance
 # ---------------------------------------------------------------------------
 
@@ -166,6 +211,20 @@ def _fetch_yfinance(symbols: list[str]) -> dict[str, float | None]:
 # ---------------------------------------------------------------------------
 # Cache upsert
 # ---------------------------------------------------------------------------
+
+def _upsert_history(session, symbol: str, price: float, currency: str, source: str):
+    from models import PriceHistory
+    today = datetime.now(timezone.utc).date()
+    existing = session.execute(
+        select(PriceHistory).where(PriceHistory.symbol == symbol, PriceHistory.date == today)
+    ).scalar_one_or_none()
+    if existing:
+        existing.price = price
+        existing.currency = currency
+        existing.source = source
+    else:
+        session.add(PriceHistory(symbol=symbol, date=today, price=price, currency=currency, source=source))
+
 
 def _upsert_cache(session, symbol: str, price: float, currency: str, source: str):
     existing = session.execute(
@@ -211,10 +270,13 @@ def refresh_all_prices(holdings) -> dict:
             h.symbol for h in holdings if h.symbol not in manual_symbols
         ]
 
+        fund_syms   = [s for s in symbols_to_fetch if _is_cn_fund(s)]
         ashare_syms = [s for s in symbols_to_fetch if _is_ashare(s)]
-        other_syms = [s for s in symbols_to_fetch if not _is_ashare(s)]
+        other_syms  = [s for s in symbols_to_fetch if not _is_ashare(s) and not _is_cn_fund(s)]
 
         all_results: dict[str, float | None] = {}
+        if fund_syms:
+            all_results.update(_fetch_eastmoney_fund(fund_syms))
         if ashare_syms:
             all_results.update(_fetch_tushare(ashare_syms))
         if other_syms:
@@ -234,7 +296,14 @@ def refresh_all_prices(holdings) -> dict:
                 continue
             h = holding_map.get(sym)
             currency = h.currency if h else "CNY"
-            _upsert_cache(session, sym, price, currency, "tushare" if _is_ashare(sym) else "yfinance")
+            if _is_cn_fund(sym):
+                source = "eastmoney"
+            elif _is_ashare(sym):
+                source = "tushare"
+            else:
+                source = "yfinance"
+            _upsert_cache(session, sym, price, currency, source)
+            _upsert_history(session, sym, price, currency, source)
             updated += 1
 
         session.commit()

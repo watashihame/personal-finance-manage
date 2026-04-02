@@ -1,6 +1,6 @@
 import os
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Date, UniqueConstraint
 from sqlalchemy.orm import declarative_base, Session
 from datetime import datetime, timezone
 
@@ -51,6 +51,18 @@ class ExchangeRate(Base):
     to_currency = Column(String(5), nullable=False, default="CNY")
     rate = Column(Float, nullable=False)
     fetched_at = Column(DateTime, nullable=False)
+
+
+class PriceHistory(Base):
+    __tablename__ = "price_history"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(30), nullable=False)
+    date = Column(Date, nullable=False)
+    price = Column(Float, nullable=False)
+    currency = Column(String(5), nullable=False)
+    source = Column(String(20), default="auto")
+    __table_args__ = (UniqueConstraint('symbol', 'date', name='uq_ph_symbol_date'),)
 
 
 def init_db():
