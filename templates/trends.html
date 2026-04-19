@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}趋势分析 — 持仓追踪{% endblock %}
+
+{% block content %}
+<h5 class="text-muted mb-3">持仓价值趋势</h5>
+
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-body">
+
+    <!-- 模式切换 + 选择器 -->
+    <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+      <div class="btn-group" role="group">
+        <button id="btn-total"   class="btn btn-sm btn-primary"         onclick="switchMode('total')">总资产</button>
+        <button id="btn-holding" class="btn btn-sm btn-outline-primary" onclick="switchMode('holding')">按持仓</button>
+        <button id="btn-tag"     class="btn btn-sm btn-outline-primary" onclick="switchMode('tag')">按标签</button>
+      </div>
+
+      <select id="holding-select" class="form-select form-select-sm w-auto d-none" onchange="loadChart()">
+        {% for h in holding_list %}
+          <option value="{{ h.symbol }}">{{ h.name }} ({{ h.symbol }})</option>
+        {% endfor %}
+      </select>
+
+      <select id="tag-select" class="form-select form-select-sm w-auto d-none" onchange="loadChart()">
+        {% for tag in all_tags %}
+          <option value="{{ tag }}">{{ tag }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- 图表区域 -->
+    <div id="no-data-msg" class="text-center text-muted py-5" style="display:none">
+      暂无历史数据，刷新行情后将开始记录。<br>
+      若已有交易记录，可点击下方「回填历史」按钮重建历史数据。
+    </div>
+    <div class="chart-container" style="position:relative; height:360px">
+      <canvas id="trendChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- 回填历史 -->
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-body d-flex align-items-center gap-3">
+    <div>
+      <strong>回填历史数据</strong>
+      <div class="text-muted small">根据已有的价格历史记录和交易记录，重建各日期的市值快照。</div>
+    </div>
+    <button id="backfill-btn" class="btn btn-outline-secondary btn-sm ms-auto" onclick="backfillHistory()">
+      回填历史
+    </button>
+    <span id="backfill-result" class="text-muted small"></span>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let trendChart = null;
+let currentMode = 'total';
+
+function switchMode(mode) {
+  currentMode = mode;
+
+  document.getElementById('btn-total').className   = 'btn btn-sm ' + (mode === 'total'   ? 'btn-primary' : 'btn-outline-primary');
+  document.getElementById('btn-holding').className = 'btn btn-sm ' + (mode === 'holding' ? 'btn-primary' : 'btn-outline-primary');
+  document.getElementById('btn-tag').className     = 'btn btn-sm ' + (mode === 'tag'     ? 'btn-primary' : 'btn-outline-primary');
+
+  document.getElementById('holding-select').classList.toggle('d-none', mode !== 'holding');
+  document.getElementById('tag-select').classList.toggle('d-none', mode !== 'tag');
+
+  loadChart();
+}
+
+async function loadChart() {
+  let url;
+  if (currentMode === 'total') {
+    url = '/api/portfolio-value-history';
+  } else if (currentMode === 'holding') {
+    const sym = document.getElementById('holding-select').value;
+    if (!sym) return;
+    url = '/api/holding-value-history/' + encodeURIComponent(sym);
+  } else {
+    const tag = document.getElementById('tag-select').value;
+    if (!tag) return;
+    url = '/api/tag-value-history/' + encodeURIComponent(tag);
+  }
+
+  let data;
+  try {
+    const resp = await fetch(url);
+    data = await resp.json();
+  } catch (e) {
+    console.error('加载趋势数据失败', e);
+    return;
+  }
+
+  const noDataEl = document.getElementById('no-data-msg');
+  const canvas   = document.getElementById('trendChart');
+
+  if (!data.dates || data.dates.length === 0) {
+    noDataEl.style.display = 'block';
+    canvas.style.display = 'none';
+    if (trendChart) { trendChart.destroy(); trendChart = null; }
+    return;
+  }
+  noDataEl.style.display = 'none';
+  canvas.style.display = 'block';
+
+  let label;
+  if (currentMode === 'total') {
+    label = '总资产 (¥)';
+  } else if (currentMode === 'holding') {
+    label = (data.name || data.symbol) + ' 市值 (¥)';
+  } else {
+    label = data.tag + ' 市值 (¥)';
+  }
+
+  const showPoints = data.dates.length <= 60;
+
+  if (trendChart) trendChart.destroy();
+  trendChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: data.dates,
+      datasets: [{
+        label: label,
+        data: data.values,
+        borderColor: '#4e79a7',
+        backgroundColor: 'rgba(78,121,167,0.08)',
+        borderWidth: 2,
+        pointRadius: showPoints ? 3 : 0,
+        pointHoverRadius: 5,
+        fill: true,
+        tension: 0.1,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const v = ctx.parsed.y;
+              if (v >= 10000) {
+                return ' ¥' + (v / 10000).toFixed(2) + ' 万';
+              }
+              return ' ¥' + v.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { maxTicksLimit: 10 }
+        },
+        y: {
+          ticks: {
+            callback: v => v >= 10000 ? '¥' + (v / 10000).toFixed(1) + '万' : '¥' + v.toLocaleString()
+          }
+        }
+      }
+    }
+  });
+}
+
+async function backfillHistory() {
+  const btn = document.getElementById('backfill-btn');
+  const result = document.getElementById('backfill-result');
+  btn.disabled = true;
+  btn.textContent = '处理中…';
+  result.textContent = '';
+  try {
+    const resp = await fetch('/api/backfill-value-history', { method: 'POST' });
+    const data = await resp.json();
+    result.textContent = `完成，处理了 ${data.days_processed} 个日期`;
+    loadChart();
+  } catch (e) {
+    result.textContent = '回填失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '回填历史';
+  }
+}
+
+// 初始加载
+loadChart();
+</script>
+{% endblock %}

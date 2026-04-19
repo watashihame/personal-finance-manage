@@ -31,7 +31,7 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import select
 
-from models import init_db, get_session, Holding, PriceCache, ExchangeRate
+from models import init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate, recalculate_holding
 from price_fetcher import (
     refresh_all_prices,
     set_manual_price,
@@ -389,6 +389,126 @@ def delete_holding(holding_id: int, confirm: bool) -> str:
             session.delete(h)
             session.commit()
             return json.dumps({"ok": True, "deleted": deleted_info}, ensure_ascii=False)
+        finally:
+            session.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Tools — Transactions
+# ---------------------------------------------------------------------------
+
+TX_TYPES = ["BUY", "SELL", "TRANSFER_IN", "TRANSFER_OUT"]
+
+
+@mcp.tool()
+def add_transaction(
+    holding_id: int,
+    tx_type: Literal["BUY", "SELL", "TRANSFER_IN", "TRANSFER_OUT"],
+    quantity: float,
+    unit_price: float,
+    tx_date: str,
+    fee: float = 0.0,
+    notes: str = "",
+) -> str:
+    """
+    Record a buy/sell/transfer transaction for an existing holding and update its quantity and cost_price.
+
+    - BUY / TRANSFER_IN: increases quantity, updates weighted-average cost_price.
+    - SELL / TRANSFER_OUT: decreases quantity, cost_price unchanged (average-cost method).
+    - tx_date: ISO format date string, e.g. '2026-04-02'.
+    - fee: transaction fee in the holding's currency (default 0).
+
+    Use search_holdings first to find the holding ID.
+    """
+    try:
+        from datetime import date as dt_date
+        try:
+            parsed_date = dt_date.fromisoformat(tx_date)
+        except ValueError:
+            return json.dumps({"ok": False, "error": f"Invalid tx_date '{tx_date}', use YYYY-MM-DD"}, ensure_ascii=False)
+
+        if quantity <= 0:
+            return json.dumps({"ok": False, "error": "quantity must be > 0"}, ensure_ascii=False)
+        if unit_price <= 0:
+            return json.dumps({"ok": False, "error": "unit_price must be > 0"}, ensure_ascii=False)
+
+        session = get_session()
+        try:
+            h = session.get(Holding, holding_id)
+            if not h:
+                return json.dumps({"ok": False, "error": f"Holding {holding_id} not found"}, ensure_ascii=False)
+
+            tx = Transaction(
+                holding_id=holding_id,
+                tx_type=tx_type,
+                tx_date=parsed_date,
+                quantity=quantity,
+                unit_price=unit_price,
+                fee=fee,
+                notes=notes.strip(),
+            )
+            session.add(tx)
+            session.flush()
+
+            recalculate_holding(session, h)
+            session.commit()
+            session.refresh(tx)
+
+            return json.dumps({
+                "ok": True,
+                "transaction_id": tx.id,
+                "holding_id": h.id,
+                "symbol": h.symbol,
+                "new_quantity": round(h.quantity, 6),
+                "new_cost_price": round(h.cost_price, 6),
+            }, ensure_ascii=False)
+        finally:
+            session.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def list_transactions(holding_id: int) -> str:
+    """
+    List all transactions for a holding, ordered by date ascending.
+    Use search_holdings first to find the holding ID.
+    """
+    try:
+        session = get_session()
+        try:
+            h = session.get(Holding, holding_id)
+            if not h:
+                return json.dumps({"ok": False, "error": f"Holding {holding_id} not found"}, ensure_ascii=False)
+
+            txs = session.execute(
+                select(Transaction)
+                .where(Transaction.holding_id == holding_id)
+                .order_by(Transaction.tx_date, Transaction.id)
+            ).scalars().all()
+
+            return json.dumps({
+                "holding_id": holding_id,
+                "name": h.name,
+                "symbol": h.symbol,
+                "current_quantity": h.quantity,
+                "current_cost_price": h.cost_price,
+                "transactions": [
+                    {
+                        "id": tx.id,
+                        "tx_type": tx.tx_type,
+                        "tx_date": tx.tx_date.isoformat(),
+                        "quantity": tx.quantity,
+                        "unit_price": tx.unit_price,
+                        "fee": tx.fee,
+                        "amount": round(tx.quantity * tx.unit_price + (tx.fee or 0), 2),
+                        "notes": tx.notes,
+                    }
+                    for tx in txs
+                ],
+            }, ensure_ascii=False, indent=2)
         finally:
             session.close()
     except Exception as e:

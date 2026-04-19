@@ -8,12 +8,13 @@ from datetime import date as dt_date
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from sqlalchemy import select, func
 
-from models import init_db, get_session, Holding, PriceCache, ExchangeRate, PriceHistory
+from models import init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate, PriceHistory, PortfolioValueHistory, recalculate_holding
 from price_fetcher import (
     refresh_all_prices,
     set_manual_price,
     clear_manual_override,
     fetch_exchange_rates,
+    compute_quantity_at_date,
     CHART_COLORS,
 )
 
@@ -247,20 +248,33 @@ def holding_add():
         try:
             raw_tags = request.form.get("tags", "")
             tags = ",".join(t.strip() for t in raw_tags.split(",") if t.strip())
+            qty = float(request.form["quantity"])
+            cost = float(request.form["cost_price"])
             h = Holding(
                 name=request.form["name"].strip(),
                 symbol=request.form["symbol"].strip().upper(),
                 market=request.form["market"],
                 asset_type=request.form["asset_type"],
                 currency=request.form["currency"],
-                quantity=float(request.form["quantity"]),
-                cost_price=float(request.form["cost_price"]),
+                quantity=qty,
+                cost_price=cost,
                 tags=tags,
                 notes=request.form.get("notes", "").strip(),
             )
             session = get_session()
             try:
                 session.add(h)
+                session.flush()
+                tx = Transaction(
+                    holding_id=h.id,
+                    tx_type="BUY",
+                    tx_date=dt_date.today(),
+                    quantity=qty,
+                    unit_price=cost,
+                    fee=0.0,
+                    notes="初始建仓",
+                )
+                session.add(tx)
                 session.commit()
                 flash(f"已添加持仓：{h.name} ({h.symbol})", "success")
             finally:
@@ -328,6 +342,7 @@ def holding_delete(holding_id: int):
         h = session.get(Holding, holding_id)
         if h:
             name = f"{h.name} ({h.symbol})"
+            session.query(Transaction).filter_by(holding_id=holding_id).delete()
             session.delete(h)
             session.commit()
             flash(f"已删除：{name}", "info")
@@ -336,6 +351,72 @@ def holding_delete(holding_id: int):
     finally:
         session.close()
     return redirect(url_for("holdings_list"))
+
+
+# ---------------------------------------------------------------------------
+# Transaction routes
+# ---------------------------------------------------------------------------
+
+TX_TYPE_LABELS = {
+    "BUY": "买入",
+    "SELL": "卖出",
+    "TRANSFER_IN": "转入",
+    "TRANSFER_OUT": "转出",
+}
+
+
+@app.route("/holdings/<int:holding_id>/transactions")
+def holding_transactions(holding_id: int):
+    db = get_session()
+    try:
+        h = db.get(Holding, holding_id)
+        if h is None:
+            flash("持仓不存在", "warning")
+            return redirect(url_for("holdings_list"))
+        txs = db.execute(
+            select(Transaction)
+            .where(Transaction.holding_id == holding_id)
+            .order_by(Transaction.tx_date, Transaction.id)
+        ).scalars().all()
+        return render_template(
+            "transactions.html",
+            holding=h,
+            transactions=txs,
+            tx_type_labels=TX_TYPE_LABELS,
+            today=dt_date.today().isoformat(),
+        )
+    finally:
+        db.close()
+
+
+@app.route("/holdings/<int:holding_id>/transactions/add", methods=["POST"])
+def holding_transactions_add(holding_id: int):
+    db = get_session()
+    try:
+        h = db.get(Holding, holding_id)
+        if h is None:
+            flash("持仓不存在", "warning")
+            return redirect(url_for("holdings_list"))
+        try:
+            tx = Transaction(
+                holding_id=holding_id,
+                tx_type=request.form["tx_type"],
+                tx_date=dt_date.fromisoformat(request.form["tx_date"]),
+                quantity=float(request.form["quantity"]),
+                unit_price=float(request.form["unit_price"]),
+                fee=float(request.form.get("fee") or 0),
+                notes=request.form.get("notes", "").strip(),
+            )
+            db.add(tx)
+            db.flush()
+            recalculate_holding(db, h)
+            db.commit()
+            flash("交易记录已录入", "success")
+        except (ValueError, KeyError) as exc:
+            flash(f"输入有误：{exc}", "danger")
+    finally:
+        db.close()
+    return redirect(url_for("holding_transactions", holding_id=holding_id))
 
 
 # ---------------------------------------------------------------------------
@@ -350,8 +431,8 @@ def api_refresh_prices():
         if not holdings:
             return jsonify({"updated": 0, "failed": 0, "errors": [], "timestamp": ""})
         # Also refresh exchange rates
-        fetch_exchange_rates()
-        result = refresh_all_prices(holdings)
+        rates = fetch_exchange_rates()
+        result = refresh_all_prices(holdings, rates=rates)
         return jsonify(result)
     finally:
         session.close()
@@ -412,6 +493,159 @@ def api_price_history(symbol: str):
         })
     finally:
         session_db.close()
+
+
+@app.route("/api/portfolio-value-history")
+def api_portfolio_value_history():
+    db = get_session()
+    try:
+        rows = db.execute(
+            select(PortfolioValueHistory)
+            .where(PortfolioValueHistory.scope == "total")
+            .order_by(PortfolioValueHistory.date)
+        ).scalars().all()
+        return jsonify({
+            "dates":  [r.date.isoformat() for r in rows],
+            "values": [r.value_cny for r in rows],
+        })
+    finally:
+        db.close()
+
+
+@app.route("/api/holding-value-history/<symbol>")
+def api_holding_value_history(symbol: str):
+    symbol = symbol.upper()
+    db = get_session()
+    try:
+        rows = db.execute(
+            select(PortfolioValueHistory)
+            .where(
+                PortfolioValueHistory.scope == symbol,
+                PortfolioValueHistory.scope_type == "holding",
+            )
+            .order_by(PortfolioValueHistory.date)
+        ).scalars().all()
+        holding = db.execute(
+            select(Holding).where(Holding.symbol == symbol)
+        ).scalar_one_or_none()
+        return jsonify({
+            "symbol": symbol,
+            "name": holding.name if holding else symbol,
+            "dates":  [r.date.isoformat() for r in rows],
+            "values": [r.value_cny for r in rows],
+        })
+    finally:
+        db.close()
+
+
+@app.route("/api/tag-value-history/<tag>")
+def api_tag_value_history(tag: str):
+    db = get_session()
+    try:
+        rows = db.execute(
+            select(PortfolioValueHistory)
+            .where(
+                PortfolioValueHistory.scope == tag,
+                PortfolioValueHistory.scope_type == "tag",
+            )
+            .order_by(PortfolioValueHistory.date)
+        ).scalars().all()
+        return jsonify({
+            "tag":    tag,
+            "dates":  [r.date.isoformat() for r in rows],
+            "values": [r.value_cny for r in rows],
+        })
+    finally:
+        db.close()
+
+
+@app.route("/api/backfill-value-history", methods=["POST"])
+def api_backfill_value_history():
+    """
+    遍历 price_history 中已有的历史日期，用 compute_quantity_at_date 计算
+    每天的实际持仓数量，回填 portfolio_value_history。
+    """
+    db = get_session()
+    try:
+        holdings = db.execute(select(Holding)).scalars().all()
+        if not holdings:
+            return jsonify({"days_processed": 0})
+
+        # 所有有价格记录的历史日期
+        dates = db.execute(
+            select(PriceHistory.date).distinct().order_by(PriceHistory.date)
+        ).scalars().all()
+        if not dates:
+            return jsonify({"days_processed": 0})
+
+        rates = fetch_exchange_rates()
+        rates_cny = dict(rates)
+        rates_cny["CNY"] = 1.0
+
+        # 预建 symbol -> price_history rows 映射，减少查询
+        all_history = db.execute(select(PriceHistory)).scalars().all()
+        ph_map: dict[tuple, float] = {}  # (symbol, date) -> price
+        ph_currency: dict[str, str] = {}
+        for ph in all_history:
+            ph_map[(ph.symbol, ph.date)] = ph.price
+            ph_currency[ph.symbol] = ph.currency
+
+        days_processed = 0
+        for d in dates:
+            holding_values: dict[str, float] = {}
+            for h in holdings:
+                price = ph_map.get((h.symbol, d))
+                if price is None:
+                    continue
+                qty = compute_quantity_at_date(db, h.id, d)
+                if qty <= 0:
+                    continue
+                fx = rates_cny.get(h.currency, 1.0)
+                holding_values[h.symbol] = qty * price * fx
+
+            if not holding_values:
+                continue
+
+            from price_fetcher import _upsert_portfolio_value_history
+            holding_map = {h.symbol: h for h in holdings}
+
+            for sym, val in holding_values.items():
+                _upsert_portfolio_value_history(db, d, sym, "holding", val)
+
+            tag_totals: dict[str, float] = {}
+            for sym, val in holding_values.items():
+                h = holding_map.get(sym)
+                for tag in (t.strip() for t in (h.tags or "").split(",") if t.strip()):
+                    tag_totals[tag] = tag_totals.get(tag, 0.0) + val
+            for tag, val in tag_totals.items():
+                _upsert_portfolio_value_history(db, d, tag, "tag", val)
+
+            total_val = sum(holding_values.values())
+            _upsert_portfolio_value_history(db, d, "total", "total", total_val)
+
+            days_processed += 1
+
+        db.commit()
+        return jsonify({"days_processed": days_processed})
+    finally:
+        db.close()
+
+
+@app.route("/trends")
+def trends():
+    db = get_session()
+    try:
+        holdings = db.execute(select(Holding)).scalars().all()
+        all_tags = sorted({
+            t.strip()
+            for h in holdings
+            for t in (h.tags or "").split(",")
+            if t.strip()
+        })
+        holding_list = [{"symbol": h.symbol, "name": h.name} for h in holdings]
+        return render_template("trends.html", holding_list=holding_list, all_tags=all_tags)
+    finally:
+        db.close()
 
 
 @app.route("/api/holdings/search")

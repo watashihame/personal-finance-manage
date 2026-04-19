@@ -128,6 +128,8 @@
               {{ r.pnl_pct | fmt_pct }}
             </td>
             <td class="text-center" style="white-space:nowrap">
+              <a href="{{ url_for('holding_transactions', holding_id=r.id) }}"
+                 class="btn btn-sm btn-outline-info me-1">交易</a>
               <a href="{{ url_for('holding_edit', holding_id=r.id) }}"
                  class="btn btn-sm btn-outline-primary me-1">编辑</a>
               <button type="button" class="btn btn-sm btn-outline-secondary me-1"

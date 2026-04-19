@@ -8,7 +8,7 @@ import requests
 import yfinance as yf
 from sqlalchemy import select
 
-from models import PriceCache, ExchangeRate, get_session
+from models import PriceCache, ExchangeRate, Transaction, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +212,43 @@ def _fetch_yfinance(symbols: list[str]) -> dict[str, float | None]:
 # Cache upsert
 # ---------------------------------------------------------------------------
 
+def compute_quantity_at_date(session, holding_id: int, target_date) -> float:
+    """从 transactions 推算某持仓在 target_date（含）时的实际持有数量。"""
+    txs = session.execute(
+        select(Transaction)
+        .where(Transaction.holding_id == holding_id, Transaction.tx_date <= target_date)
+        .order_by(Transaction.tx_date, Transaction.id)
+    ).scalars().all()
+    total_qty = 0.0
+    total_cost = 0.0
+    for tx in txs:
+        if tx.tx_type in ("BUY", "TRANSFER_IN"):
+            total_cost += tx.quantity * tx.unit_price + (tx.fee or 0.0)
+            total_qty += tx.quantity
+        elif tx.tx_type in ("SELL", "TRANSFER_OUT"):
+            if total_qty > 0:
+                fraction = tx.quantity / total_qty
+                total_cost -= total_cost * fraction
+            total_qty -= tx.quantity
+    return max(total_qty, 0.0)
+
+
+def _upsert_portfolio_value_history(session, date, scope: str, scope_type: str, value_cny: float):
+    from models import PortfolioValueHistory
+    existing = session.execute(
+        select(PortfolioValueHistory).where(
+            PortfolioValueHistory.date == date,
+            PortfolioValueHistory.scope == scope,
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.value_cny = value_cny
+    else:
+        session.add(PortfolioValueHistory(
+            date=date, scope=scope, scope_type=scope_type, value_cny=value_cny
+        ))
+
+
 def _upsert_history(session, symbol: str, price: float, currency: str, source: str):
     from models import PriceHistory
     today = datetime.now(timezone.utc).date()
@@ -252,7 +289,7 @@ def _upsert_cache(session, symbol: str, price: float, currency: str, source: str
 # Public API
 # ---------------------------------------------------------------------------
 
-def refresh_all_prices(holdings) -> dict:
+def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
     """
     Fetch prices for all holdings. Skip symbols with is_manual=True.
     Returns {"updated": n, "failed": n, "errors": [...], "timestamp": str}
@@ -305,6 +342,42 @@ def refresh_all_prices(holdings) -> dict:
             _upsert_cache(session, sym, price, currency, source)
             _upsert_history(session, sym, price, currency, source)
             updated += 1
+
+        # --- 组合价值快照 ---
+        if rates is None:
+            rates = fetch_exchange_rates()
+        rates_cny = dict(rates)
+        rates_cny["CNY"] = 1.0
+        today = datetime.now(timezone.utc).date()
+
+        holding_values: dict[str, float] = {}
+        for sym, price in all_results.items():
+            if price is None:
+                continue
+            h = holding_map.get(sym)
+            if h is None:
+                continue
+            qty = compute_quantity_at_date(session, h.id, today)
+            if qty <= 0:
+                continue
+            fx = rates_cny.get(h.currency, 1.0)
+            holding_values[sym] = qty * price * fx
+
+        for sym, val in holding_values.items():
+            _upsert_portfolio_value_history(session, today, sym, "holding", val)
+
+        tag_totals: dict[str, float] = {}
+        for sym, val in holding_values.items():
+            h = holding_map.get(sym)
+            for tag in (t.strip() for t in (h.tags or "").split(",") if t.strip()):
+                tag_totals[tag] = tag_totals.get(tag, 0.0) + val
+        for tag, val in tag_totals.items():
+            _upsert_portfolio_value_history(session, today, tag, "tag", val)
+
+        total_val = sum(holding_values.values())
+        if total_val > 0:
+            _upsert_portfolio_value_history(session, today, "total", "total", total_val)
+        # --- end snapshot ---
 
         session.commit()
         return {

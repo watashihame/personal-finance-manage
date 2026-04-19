@@ -26,6 +26,10 @@
              href="{{ url_for('holdings_list') }}">持仓列表</a>
         </li>
         <li class="nav-item">
+          <a class="nav-link {% if request.endpoint == 'trends' %}active{% endif %}"
+             href="{{ url_for('trends') }}">趋势分析</a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link {% if request.endpoint == 'holding_add' %}active{% endif %}"
              href="{{ url_for('holding_add') }}">+ 添加持仓</a>
         </li>

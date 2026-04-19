@@ -1,7 +1,7 @@
 import os
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Date, UniqueConstraint
-from sqlalchemy.orm import declarative_base, Session
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Date, UniqueConstraint, ForeignKey
+from sqlalchemy.orm import declarative_base, Session, relationship
 from datetime import datetime, timezone
 
 Base = declarative_base()
@@ -29,6 +29,26 @@ class Holding(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
+
+    transactions = relationship("Transaction", back_populates="holding", order_by="Transaction.tx_date", cascade="all, delete-orphan")
+
+
+class Transaction(Base):
+    """每一笔买入/卖出/转换交易记录。holdings 的 quantity 和 cost_price 由此汇总得出。"""
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True)
+    holding_id = Column(Integer, ForeignKey("holdings.id"), nullable=False)
+    # BUY / SELL / TRANSFER_IN / TRANSFER_OUT
+    tx_type = Column(String(15), nullable=False)
+    tx_date = Column(Date, nullable=False)
+    quantity = Column(Float, nullable=False)
+    unit_price = Column(Float, nullable=False)
+    fee = Column(Float, default=0.0)
+    notes = Column(String(500), default="")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    holding = relationship("Holding", back_populates="transactions")
 
 
 class PriceCache(Base):
@@ -63,6 +83,43 @@ class PriceHistory(Base):
     currency = Column(String(5), nullable=False)
     source = Column(String(20), default="auto")
     __table_args__ = (UniqueConstraint('symbol', 'date', name='uq_ph_symbol_date'),)
+
+
+class PortfolioValueHistory(Base):
+    __tablename__ = "portfolio_value_history"
+
+    id         = Column(Integer, primary_key=True)
+    date       = Column(Date, nullable=False)
+    scope      = Column(String(100), nullable=False)  # "total" | symbol | tag 名
+    scope_type = Column(String(10),  nullable=False)  # "total" | "holding" | "tag"
+    value_cny  = Column(Float, nullable=False)
+    __table_args__ = (UniqueConstraint('date', 'scope', name='uq_pvh_date_scope'),)
+
+
+def recalculate_holding(session, h) -> None:
+    """从所有交易记录重新计算 holding.quantity 和 cost_price（加权平均成本法）。"""
+    from sqlalchemy import select as sa_select
+    txs = session.execute(
+        sa_select(Transaction)
+        .where(Transaction.holding_id == h.id)
+        .order_by(Transaction.tx_date, Transaction.id)
+    ).scalars().all()
+
+    total_qty = 0.0
+    total_cost = 0.0
+    for tx in txs:
+        if tx.tx_type in ("BUY", "TRANSFER_IN"):
+            total_cost += tx.quantity * tx.unit_price + (tx.fee or 0.0)
+            total_qty += tx.quantity
+        elif tx.tx_type in ("SELL", "TRANSFER_OUT"):
+            if total_qty > 0:
+                fraction = tx.quantity / total_qty
+                total_cost -= total_cost * fraction
+            total_qty -= tx.quantity
+
+    h.quantity = max(total_qty, 0.0)
+    if total_qty > 0:
+        h.cost_price = total_cost / total_qty
 
 
 def init_db():

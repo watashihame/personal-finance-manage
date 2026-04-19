@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-portfolio}
       POSTGRES_USER: ${POSTGRES_USER:-portfolio}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -29,6 +31,10 @@ services:
     volumes:
       # Mount static dir so nginx can serve it directly
       - static_files:/app/static
+      # Mount source code so local edits take effect without rebuilding
+      - ./app.py:/app/app.py:ro
+      - ./models.py:/app/models.py:ro
+      - ./templates:/app/templates:ro
 
   nginx:
     image: nginx:1.27-alpine
@@ -50,11 +56,14 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-portfolio}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-portfolio}
       TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
       TRANSPORT: streamable-http
-      MCP_HOST: 0.0.0.0
+      MCP_HOST: ${MCP_HOST:-0.0.0.0}
       MCP_PORT: "8000"
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - ./mcp_server.py:/app/mcp_server.py:ro
+      - ./models.py:/app/models.py:ro
 
 volumes:
   postgres_data:
