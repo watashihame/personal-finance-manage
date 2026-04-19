@@ -48,6 +48,15 @@ services:
       - web
       - mcp
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - nginx
+
   mcp:
     build: .
     restart: unless-stopped
@@ -58,6 +67,7 @@ services:
       TRANSPORT: streamable-http
       MCP_HOST: ${MCP_HOST:-0.0.0.0}
       MCP_PORT: "8000"
+      MCP_TOKEN: ${MCP_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy

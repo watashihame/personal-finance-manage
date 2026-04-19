@@ -12,7 +12,7 @@
 - **交易记录** — 记录每笔买卖交易，自动重算持仓成本和数量
 - **趋势分析** — 资产组合历史净值曲线、各持仓/标签历史市值走势图
 - **可视化** — 资产分配饼图 + 持仓市值柱状图
-- **Docker 部署** — 开箱即用的 Docker Compose 配置（Flask + Nginx + PostgreSQL）
+- **Docker 部署** — 开箱即用的 Docker Compose 配置（Flask + Nginx + PostgreSQL + Cloudflare Tunnel）
 
 ## 快速开始
 
@@ -42,6 +42,13 @@ cp .env.example .env
 POSTGRES_PASSWORD=your_strong_password
 SECRET_KEY=your_random_32char_secret
 TUSHARE_TOKEN=your_tushare_token
+
+# 可选：开启鉴权
+ACCESS_TOKEN=your_web_token
+MCP_TOKEN=your_mcp_token
+
+# 可选：Cloudflare Tunnel
+TUNNEL_TOKEN=your_cloudflare_tunnel_token
 ```
 
 **3. 启动**
@@ -85,12 +92,14 @@ token = your_tushare_token_here
 ## 架构
 
 ```
-浏览器
-  └─ Nginx :80
-       ├─ /static/  →  直接返回静态文件
-       └─ /         →  反向代理到 Gunicorn
-                          └─ Flask 应用
-                               └─ PostgreSQL
+互联网
+  └─ Cloudflare Tunnel（HTTPS）
+       └─ Nginx :80
+            ├─ /static/   →  直接返回静态文件
+            ├─ /mcp       →  MCP Server（Bearer Token 鉴权）
+            └─ /          →  反向代理到 Gunicorn
+                                └─ Flask 应用
+                                     └─ PostgreSQL
 ```
 
 | 容器 | 镜像 | 说明 |
@@ -98,6 +107,8 @@ token = your_tushare_token_here
 | `nginx` | nginx:1.27-alpine | 反向代理 + 静态文件 |
 | `web` | 本地构建 | Flask + Gunicorn，2 workers |
 | `db` | postgres:16-alpine | 数据持久化 |
+| `mcp` | 本地构建 | MCP streamable-http 服务 |
+| `cloudflared` | cloudflare/cloudflared | Cloudflare Tunnel，自动 TLS |
 
 ## 环境变量
 
@@ -106,7 +117,9 @@ token = your_tushare_token_here
 | `POSTGRES_PASSWORD` | 是 | — | PostgreSQL 密码 |
 | `SECRET_KEY` | 是 | — | Flask Session 密钥 |
 | `TUSHARE_TOKEN` | 否 | — | A 股行情 Token，不填则 A 股无法自动刷新 |
-| `ACCESS_TOKEN` | 否 | — | 访问鉴权 Token，设置后全站强制要求登录，留空则关闭鉴权 |
+| `ACCESS_TOKEN` | 否 | — | Web 全站鉴权 Token，设置后强制登录，留空则关闭鉴权 |
+| `MCP_TOKEN` | 否 | — | MCP HTTP 端点 Bearer Token，设置后强制鉴权，留空则关闭 |
+| `TUNNEL_TOKEN` | 否 | — | Cloudflare Tunnel Token，不填则不启动 cloudflared |
 | `POSTGRES_DB` | 否 | `portfolio` | 数据库名 |
 | `POSTGRES_USER` | 否 | `portfolio` | 数据库用户名 |
 | `NGINX_PORT` | 否 | `80` | Nginx 监听端口 |
@@ -140,11 +153,19 @@ Authorization: Bearer your_strong_token_here
 示例：
 
 ```bash
+# REST API
 curl -X POST http://localhost/api/refresh-prices \
   -H "Authorization: Bearer your_strong_token_here"
+
+# MCP 端点（需同时声明两种 Accept）
+curl -s https://<你的域名>/mcp \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer your_mcp_token" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
 ```
 
-MCP Server（stdio 模式）直连数据库，不经过 HTTP，无需 Token。
+MCP Server（stdio 模式）直连数据库，不经过 HTTP，无需 Token。HTTP 模式下使用 `MCP_TOKEN` 独立鉴权，见下方 MCP Server 章节。
 
 ---
 
@@ -210,8 +231,8 @@ ALTER TABLE holdings ADD COLUMN tags VARCHAR(200) DEFAULT '';
 通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 将持仓数据和操作暴露给 AI 助手，无需打开浏览器即可让 AI 直接查询、分析和修改投资组合。
 
 支持两种传输模式：
-- **stdio** — 本地进程模式，供 Claude Code / Claude Desktop 使用
-- **streamable-http** — HTTP 服务模式，供其他服务器上的 Agent（如 OpenClaw）通过网络访问
+- **stdio** — 本地进程模式，供 Claude Code / Claude Desktop 使用，无需鉴权
+- **streamable-http** — HTTP 服务模式，供远程 Agent（如 OpenClaw、mcporter）通过网络访问，支持 Bearer Token 鉴权
 
 ### 安装依赖
 
@@ -265,27 +286,55 @@ MCP 端点地址（直连，不经 Nginx）：`http://<服务器IP>:8000/mcp`
 docker compose up -d
 ```
 
-所有流量统一走 **80 端口**，由 Nginx 路由：
+所有流量统一走 **80 端口**（或通过 Cloudflare Tunnel 走 HTTPS），由 Nginx 路由：
 
 | 路径 | 说明 |
 |------|------|
-| `http://<服务器IP>/` | Web 界面（Flask） |
-| `http://<服务器IP>/api/...` | REST API |
-| `http://<服务器IP>/mcp` | MCP streamable-http 端点 |
+| `/` | Web 界面（Flask） |
+| `/api/...` | REST API |
+| `/mcp` | MCP streamable-http 端点 |
 
-**远程 Agent 连接配置示例**（以支持 MCP streamable-http 的 Agent 框架为例）：
+#### MCP HTTP 鉴权
+
+在 `.env` 中设置 `MCP_TOKEN`，MCP 端点即开启 Bearer Token 鉴权：
+
+```ini
+MCP_TOKEN=your_strong_mcp_token
+```
+
+调用时需在请求头中携带（MCP 协议要求同时声明两种 Accept 格式）：
+
+```
+Authorization: Bearer your_strong_mcp_token
+Accept: application/json, text/event-stream
+```
+
+**mcporter 配置示例**（token 从环境变量读取，不写入文件）：
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "portfolio-tracker": {
-      "url": "http://<服务器IP>/mcp"
+      "url": "https://<你的域名>/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_TOKEN}"
+      }
     }
   }
 }
 ```
 
-> **注意：** 远程模式下建议通过防火墙规则或 Nginx 反向代理限制访问来源，避免 MCP 端口暴露在公网。
+在 shell 中 `export MCP_TOKEN=your_token`，mcporter 会自动替换 `${MCP_TOKEN}`。
+
+#### Cloudflare Tunnel（HTTPS 公网访问）
+
+在 `.env` 中填入从 Cloudflare Zero Trust 控制台获取的 Tunnel Token：
+
+```ini
+TUNNEL_TOKEN=your_cloudflare_tunnel_token
+```
+
+在 Cloudflare 控制台 → Tunnels → Public Hostnames 添加路由，服务 URL 填 `http://nginx:80`，即可通过 `https://<你的域名>/mcp` 安全访问 MCP 端点。
 
 ### 可用 Tools
 
@@ -323,8 +372,8 @@ docker compose up -d
 - **数据库** — PostgreSQL 16（开发环境可用 SQLite）
 - **行情** — [Tushare Pro](https://tushare.pro)（A 股）, [yfinance](https://github.com/ranaroussi/yfinance)（美股/日股/加密）
 - **前端** — Jinja2 模板, Bootstrap 5.3, Chart.js 4
-- **部署** — Docker, Docker Compose, Nginx
-- **AI 集成** — [MCP](https://modelcontextprotocol.io) `mcp[cli]` SDK（stdio transport，供 Claude Desktop / Claude Code 使用）
+- **部署** — Docker, Docker Compose, Nginx, Cloudflare Tunnel
+- **AI 集成** — [MCP](https://modelcontextprotocol.io) `mcp[cli]` SDK（stdio / streamable-http，支持 Claude Desktop、Claude Code、mcporter 等客户端）
 
 ## License
 

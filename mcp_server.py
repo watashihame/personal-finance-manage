@@ -25,6 +25,7 @@ MCP_PORT       Bind port for HTTP transport (default: 8000)
 import json
 import logging
 import os
+import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Literal
 
@@ -581,13 +582,60 @@ def clear_price_override(symbol: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Bearer token auth middleware (streamable-http transport only)
+# ---------------------------------------------------------------------------
+
+class _BearerAuthMiddleware:
+    """Pure-ASGI Bearer token middleware — does not buffer SSE/streaming responses."""
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            auth = headers.get(b"authorization", b"").decode()
+            if auth.startswith("Bearer ") and secrets.compare_digest(auth[7:], self.token):
+                await self.app(scope, receive, send)
+                return
+            body = b'{"error":"Unauthorized"}'
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                    (b"www-authenticate", b'Bearer realm="mcp"'),
+                ],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import uvicorn
+
     transport = os.environ.get("TRANSPORT", "stdio")
     if transport == "streamable-http":
         logging.getLogger().setLevel(logging.INFO)
-        mcp.run(transport="streamable-http")
+        mcp_token = os.environ.get("MCP_TOKEN", "").strip()
+        starlette_app = mcp.streamable_http_app()
+        if mcp_token:
+            starlette_app.add_middleware(_BearerAuthMiddleware, token=mcp_token)
+            logging.info("MCP Bearer token authentication enabled")
+        else:
+            logging.warning("MCP_TOKEN not set — MCP HTTP endpoint is unauthenticated")
+        uvicorn.run(
+            starlette_app,
+            host=os.environ.get("MCP_HOST", "127.0.0.1"),
+            port=int(os.environ.get("MCP_PORT", "8000")),
+            log_level="info",
+        )
     else:
         mcp.run(transport="stdio")
