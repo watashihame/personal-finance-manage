@@ -9,6 +9,8 @@
 - **汇率换算** — 自动获取 USD/JPY 对 CNY 汇率，所有持仓以人民币汇总
 - **手动价格** — 可为任意标的手动设置价格，屏蔽自动抓取
 - **标签分类** — 为持仓添加自定义标签，支持按标签筛选
+- **交易记录** — 记录每笔买卖交易，自动重算持仓成本和数量
+- **趋势分析** — 资产组合历史净值曲线、各持仓/标签历史市值走势图
 - **可视化** — 资产分配饼图 + 持仓市值柱状图
 - **Docker 部署** — 开箱即用的 Docker Compose 配置（Flask + Nginx + PostgreSQL）
 
@@ -167,13 +169,19 @@ docker compose down
 
 ## 数据库迁移说明
 
-如果从旧版本升级（新增了 `tags` 字段），需手动执行：
+全新部署无需手动操作，`init_db()` 启动时自动建表。
+
+从旧版本升级时，如缺少以下字段，需手动执行对应 SQL：
 
 ```sql
+-- 新增标签字段（旧版升级）
 ALTER TABLE holdings ADD COLUMN tags VARCHAR(200) DEFAULT '';
+
+-- 新增交易记录表（本次更新）
+-- 已通过 init_db() 自动创建，无需手动操作
 ```
 
-全新部署无需此操作，`init_db()` 启动时自动建表。
+历史净值快照通过 `/api/backfill-value-history` 接口或每日价格刷新时自动写入。
 
 ## API
 
@@ -189,6 +197,13 @@ ALTER TABLE holdings ADD COLUMN tags VARCHAR(200) DEFAULT '';
 | `/api/override-price` | POST | 手动设置价格 |
 | `/api/clear-override` | POST | 清除手动价格 |
 | `/api/portfolio-data` | GET | 获取图表数据（JSON） |
+| `/api/price-history/<symbol>` | GET | 获取某标的历史价格 |
+| `/api/portfolio-value-history` | GET | 获取组合历史净值（每日快照） |
+| `/api/holding-value-history/<symbol>` | GET | 获取某持仓历史市值 |
+| `/api/tag-value-history/<tag>` | GET | 获取某标签下历史市值 |
+| `/api/backfill-value-history` | POST | 补全历史净值快照 |
+| `/holdings/<id>/transactions` | GET | 查看某持仓的交易记录 |
+| `/holdings/<id>/transactions/add` | POST | 新增交易记录 |
 
 ## MCP Server（AI 集成）
 
@@ -283,6 +298,8 @@ docker compose up -d
 | `update_holding_quantity` | 更新持仓数量（支持绝对值或增量） |
 | `update_holding_tags` | 更新持仓标签 |
 | `delete_holding` | 删除持仓（需传 `confirm=true`） |
+| `add_transaction` | 记录一笔买卖交易，自动更新持仓成本和数量 |
+| `list_transactions` | 查看某持仓的全部交易记录 |
 | `refresh_prices` | 从 Tushare/yfinance 刷新全部行情和汇率 |
 | `set_price_override` | 手动设置某标的价格 |
 | `clear_price_override` | 清除手动价格，恢复自动抓取 |
