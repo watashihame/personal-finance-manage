@@ -46,7 +46,7 @@ logging.basicConfig(level=logging.WARNING)
 init_db()
 
 MARKETS = ["CN", "US", "JP", "CRYPTO", "OTHER"]
-ASSET_TYPES = ["stock", "etf", "fund", "bond", "crypto", "other"]
+ASSET_TYPES = ["stock", "etf", "fund", "bond", "crypto", "cash", "other"]
 CURRENCIES = ["CNY", "USD", "JPY", "HKD", "EUR", "GBP"]
 
 mcp = FastMCP(
@@ -73,8 +73,13 @@ def _compute_portfolio(holdings, prices: dict, rates: dict) -> tuple[list[dict],
     total_cost = 0.0
 
     for h in holdings:
-        pc = prices.get(h.symbol)
-        current_price = pc.price if pc else None
+        is_cash = h.asset_type == "cash"
+        pc = None
+        if is_cash:
+            current_price = 1.0
+        else:
+            pc = prices.get(h.symbol)
+            current_price = pc.price if pc else None
         fx = rates.get(h.currency, 1.0)
 
         if current_price is not None:
@@ -259,7 +264,7 @@ def add_holding(
     name: str,
     symbol: str,
     market: Literal["CN", "US", "JP", "CRYPTO", "OTHER"],
-    asset_type: Literal["stock", "etf", "fund", "bond", "crypto", "other"],
+    asset_type: Literal["stock", "etf", "fund", "bond", "crypto", "cash", "other"],
     currency: Literal["CNY", "USD", "JPY", "HKD", "EUR", "GBP"],
     quantity: float,
     cost_price: float,
@@ -278,10 +283,14 @@ def add_holding(
             return json.dumps({"ok": False, "error": "name is required"}, ensure_ascii=False)
         if not symbol:
             return json.dumps({"ok": False, "error": "symbol is required"}, ensure_ascii=False)
-        if quantity <= 0:
-            return json.dumps({"ok": False, "error": "quantity must be > 0"}, ensure_ascii=False)
-        if cost_price <= 0:
-            return json.dumps({"ok": False, "error": "cost_price must be > 0"}, ensure_ascii=False)
+        if asset_type == "cash":
+            if quantity <= 0:
+                return json.dumps({"ok": False, "error": "quantity must be > 0"}, ensure_ascii=False)
+        else:
+            if quantity <= 0:
+                return json.dumps({"ok": False, "error": "quantity must be > 0"}, ensure_ascii=False)
+            if cost_price <= 0:
+                return json.dumps({"ok": False, "error": "cost_price must be > 0"}, ensure_ascii=False)
 
         session = get_session()
         try:
@@ -297,6 +306,17 @@ def add_holding(
                 notes=notes.strip(),
             )
             session.add(h)
+            session.flush()
+            tx = Transaction(
+                holding_id=h.id,
+                tx_type="BUY",
+                tx_date=datetime.now(timezone.utc).date(),
+                quantity=quantity,
+                unit_price=cost_price,
+                fee=0.0,
+                notes="初始建仓",
+            )
+            session.add(tx)
             session.commit()
             session.refresh(h)
             return json.dumps({"ok": True, "id": h.id, "name": h.name, "symbol": h.symbol}, ensure_ascii=False)
@@ -412,6 +432,8 @@ def add_transaction(
     tx_date: str,
     fee: float = 0.0,
     notes: str = "",
+    counterparty_holding_id: int = 0,
+    counterparty_unit_price: float = 0.0,
 ) -> str:
     """
     Record a buy/sell/transfer transaction for an existing holding and update its quantity and cost_price.
@@ -420,6 +442,10 @@ def add_transaction(
     - SELL / TRANSFER_OUT: decreases quantity, cost_price unchanged (average-cost method).
     - tx_date: ISO format date string, e.g. '2026-04-02'.
     - fee: transaction fee in the holding's currency (default 0).
+    - counterparty_holding_id: optional, to create a paired transaction on another holding
+      (default 0 = no counterparty). For BUY, creates SELL on counterparty; for SELL, creates BUY.
+      When counterparty is a cash holding, the paired quantity is auto-calculated.
+      When counterparty is another investment, provide counterparty_unit_price.
 
     Use search_holdings first to find the holding ID.
     """
@@ -453,18 +479,75 @@ def add_transaction(
             session.add(tx)
             session.flush()
 
+            # Create paired transaction on counterparty
+            paired_info = None
+            cparty = None
+            if counterparty_holding_id > 0:
+                cparty = session.get(Holding, counterparty_holding_id)
+                if not cparty:
+                    return json.dumps({"ok": False, "error": f"Counterparty holding {counterparty_holding_id} not found"}, ensure_ascii=False)
+
+                if tx_type == "BUY":
+                    paired_type = "SELL"
+                elif tx_type == "SELL":
+                    paired_type = "BUY"
+                elif tx_type == "TRANSFER_IN":
+                    paired_type = "TRANSFER_OUT"
+                else:
+                    paired_type = "TRANSFER_IN"
+
+                if cparty.asset_type == "cash":
+                    if tx_type in ("BUY", "TRANSFER_IN"):
+                        paired_qty = quantity * unit_price + fee
+                    else:
+                        paired_qty = quantity * unit_price - fee
+                    paired_up = 1.0
+                else:
+                    paired_qty = quantity * unit_price
+                    if tx_type in ("BUY", "TRANSFER_IN"):
+                        paired_qty += fee
+                    else:
+                        paired_qty -= fee
+                    if counterparty_unit_price <= 0:
+                        return json.dumps({"ok": False, "error": "counterparty_unit_price required for non-cash counterparty"}, ensure_ascii=False)
+                    paired_up = counterparty_unit_price
+                    paired_qty = paired_qty / paired_up
+
+                if paired_qty <= 0:
+                    return json.dumps({"ok": False, "error": f"Paired quantity must be > 0, got {paired_qty}"}, ensure_ascii=False)
+
+                paired_tx = Transaction(
+                    holding_id=counterparty_holding_id,
+                    tx_type=paired_type,
+                    tx_date=parsed_date,
+                    quantity=paired_qty,
+                    unit_price=paired_up,
+                    fee=0.0,
+                    notes=f"来自 {h.symbol} 的{'买入' if paired_type == 'BUY' else '卖出'}",
+                )
+                session.add(paired_tx)
+                session.flush()
+                tx.counterparty_id = counterparty_holding_id
+                paired_tx.counterparty_id = holding_id
+                paired_info = {"transaction_id": paired_tx.id, "holding_id": cparty.id, "symbol": cparty.symbol}
+
             recalculate_holding(session, h)
+            if cparty:
+                recalculate_holding(session, cparty)
             session.commit()
             session.refresh(tx)
 
-            return json.dumps({
+            result = {
                 "ok": True,
                 "transaction_id": tx.id,
                 "holding_id": h.id,
                 "symbol": h.symbol,
                 "new_quantity": round(h.quantity, 6),
                 "new_cost_price": round(h.cost_price, 6),
-            }, ensure_ascii=False)
+            }
+            if paired_info:
+                result["paired_transaction"] = paired_info
+            return json.dumps(result, ensure_ascii=False)
         finally:
             session.close()
     except Exception as e:

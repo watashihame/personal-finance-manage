@@ -467,13 +467,15 @@ function TransactionsPage({ params }) {
               <th className="num">数量</th>
               <th className="num">价格</th>
               <th className="num">小计</th>
+              <th className="num">手续费</th>
+              <th>对方</th>
               <th>备注</th>
               <th style={{ textAlign: "center" }}>操作</th>
             </tr>
           </thead>
           <tbody>
             {txLoading && (
-              <tr><td colSpan={7} style={{ textAlign: "center", padding: 16, color: "var(--fg-3)" }}>加载中…</td></tr>
+              <tr><td colSpan={9} style={{ textAlign: "center", padding: 16, color: "var(--fg-3)" }}>加载中…</td></tr>
             )}
             {!txLoading && transactions.map(t => {
               const typeZh = TX_TYPE_ZH[t.type] || t.type;
@@ -489,6 +491,8 @@ function TransactionsPage({ params }) {
                   <td className="num">{fmt.qty(t.quantity)}</td>
                   <td className="num">{fmt.num(t.unitPrice, 2)} <span style={{ color: "var(--fg-3)", fontSize: 10 }}>{h?.currency || ""}</span></td>
                   <td className="num" style={{ fontWeight: 500 }}>{fmt.num(t.quantity * t.unitPrice, 2)}</td>
+                  <td className="num" style={{ color: t.fee > 0 ? "var(--fg-1)" : "var(--fg-3)" }}>{t.fee > 0 ? fmt.num(t.fee, 2) : "—"}</td>
+                  <td style={{ fontSize: 11 }}>{t.counterpartySymbol || "—"}</td>
                   <td style={{ color: "var(--fg-2)" }}>{t.notes || "—"}</td>
                   <td style={{ textAlign: "center" }}>
                     <button className="btn xs ghost" style={{ color: "var(--down)" }}>删除</button>
@@ -522,17 +526,40 @@ function AddTransactionModal({ onClose, holdingId, symbol, currency, onSaved }) 
   const [date, setDate] = useState(today);
   const [quantity, setQuantity] = useState("");
   const [unitPrice, setUnitPrice] = useState("");
+  const [fee, setFee] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // Find default matching cash holding by currency
+  const otherHoldings = (window.HOLDINGS || []).filter(h => h.id !== holdingId);
+  const defaultCash = otherHoldings.find(h => (h.type || h.asset_type) === "cash" && h.currency === currency);
+  const [counterpartyId, setCounterpartyId] = useState(defaultCash ? defaultCash.id : 0);
+  const [counterpartyPrice, setCounterpartyPrice] = useState("");
+
+  const selectedCounterparty = counterpartyId ? otherHoldings.find(h => h.id === counterpartyId) : null;
+  const isCashCparty = selectedCounterparty && selectedCounterparty.asset_type === "cash";
+
   const handleSave = async () => {
     if (!quantity || !unitPrice) { alert("请填写数量和价格"); return; }
+    if (counterpartyId && !isCashCparty && !counterpartyPrice) {
+      alert("转换为其他投资标的需填写目标价格"); return;
+    }
     setSaving(true);
     try {
+      const body = {
+        type: txType, date, quantity: +quantity,
+        unitPrice: +unitPrice, fee: +(fee || 0), notes,
+      };
+      if (counterpartyId) {
+        body.counterpartyHoldingId = counterpartyId;
+        if (!isCashCparty && counterpartyPrice) {
+          body.counterpartyUnitPrice = +counterpartyPrice;
+        }
+      }
       const r = await fetch(`/api/holdings/${holdingId}/transactions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: txType, date, quantity: +quantity, unitPrice: +unitPrice, notes }),
+        body: JSON.stringify(body),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "保存失败");
@@ -546,7 +573,7 @@ function AddTransactionModal({ onClose, holdingId, symbol, currency, onSaved }) 
   };
 
   return (
-    <Modal title="新增交易" onClose={onClose} width={420}>
+    <Modal title="新增交易" onClose={onClose} width={440}>
       <div style={{ display: "grid", gap: 14 }}>
         <Field label="标的"><div className="mono" style={{ fontSize: 12 }}>{symbol}</div></Field>
         <Field label="类型">
@@ -563,6 +590,26 @@ function AddTransactionModal({ onClose, holdingId, symbol, currency, onSaved }) 
         <Field label="日期"><input className="input" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
         <Field label="数量"><input className="input" type="number" placeholder="0" value={quantity} onChange={e => setQuantity(e.target.value)} /></Field>
         <Field label={`价格 (${currency})`}><input className="input" type="number" step="0.01" placeholder="0.00" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></Field>
+        <Field label={`手续费 (${currency})`}><input className="input" type="number" step="0.01" placeholder="0.00" value={fee} onChange={e => setFee(e.target.value)} /></Field>
+        <Field label={txType === "BUY" ? "资金来源" : "卖出到"}>
+          <select className="select" value={counterpartyId} onChange={e => {
+            setCounterpartyId(+e.target.value);
+            if (e.target.value === "0") setCounterpartyPrice("");
+          }}>
+            <option value="0">— 不选（仅记录单边）—</option>
+            {otherHoldings.map(h => (
+              <option key={h.id} value={h.id}>
+                {(h.type || h.asset_type) === "cash" ? `${h.name} (${h.currency})` : `${h.symbol} ${h.name}`}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {counterpartyId > 0 && !isCashCparty && (
+          <Field label={`目标价格 (${selectedCounterparty?.currency || ""})`} hint="转换时将按此价格计算目标持仓数量">
+            <input className="input" type="number" step="0.01" placeholder="0.00" value={counterpartyPrice}
+              onChange={e => setCounterpartyPrice(e.target.value)} />
+          </Field>
+        )}
         <Field label="备注 (可选)"><input className="input" placeholder="" value={notes} onChange={e => setNotes(e.target.value)} /></Field>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
           <button className="btn sm" onClick={onClose}>取消</button>
@@ -609,7 +656,11 @@ function AddHoldingPage() {
   const MARKET_CURRENCY = { CN: "CNY", US: "USD", JP: "JPY", CRYPTO: "USD", OTHER: "CNY" };
 
   const handleSubmit = async () => {
-    if (!form.symbol || !form.quantity || !form.cost_price) { alert("请填写代码、数量和成本价"); return; }
+    if (form.asset_type === "cash") {
+      if (!form.name || !form.quantity) { alert("请填写名称和数量"); return; }
+    } else {
+      if (!form.symbol || !form.quantity || !form.cost_price) { alert("请填写代码、数量和成本价"); return; }
+    }
     setSaving(true);
     try {
       const r = await fetch("/api/holdings", {
@@ -637,15 +688,18 @@ function AddHoldingPage() {
       <div className="card" style={{ padding: 24 }}>
         <div style={{ display: "grid", gap: 16 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-            <Field label="标的代码" hint="A股 600519.SH · 美股 AAPL · 日股 7203.T">
-              <input className="input" placeholder="例如 AAPL" value={form.symbol}
+            <Field label="标的代码" hint={form.asset_type === "cash" ? "现金自动生成代码" : "A股 600519.SH · 美股 AAPL · 日股 7203.T"}>
+              <input className="input" placeholder={form.asset_type === "cash" ? `CASH-${form.currency}` : "例如 AAPL"} value={form.symbol}
+                readOnly={form.asset_type === "cash"}
                 onChange={e => set("symbol", e.target.value.toUpperCase())} />
             </Field>
             <Field label="市场">
               <select className="select" value={form.market} onChange={e => {
                 const m = e.target.value;
+                const cur = MARKET_CURRENCY[m] || "CNY";
                 set("market", m);
-                set("currency", MARKET_CURRENCY[m] || "CNY");
+                set("currency", cur);
+                if (form.asset_type === "cash") set("symbol", `CASH-${cur}`);
               }}>
                 <option value="CN">A股 (CN)</option>
                 <option value="US">美股 (US)</option>
@@ -660,12 +714,20 @@ function AddHoldingPage() {
           </Field>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
             <Field label="资产类型">
-              <select className="select" value={form.asset_type} onChange={e => set("asset_type", e.target.value)}>
+              <select className="select" value={form.asset_type} onChange={e => {
+                const t = e.target.value;
+                set("asset_type", t);
+                if (t === "cash") {
+                  set("symbol", `CASH-${form.currency}`);
+                  set("cost_price", "1.0");
+                }
+              }}>
                 <option value="stock">股票</option>
                 <option value="fund">基金</option>
                 <option value="etf">ETF</option>
                 <option value="bond">债券</option>
                 <option value="crypto">加密</option>
+                <option value="cash">现金</option>
                 <option value="other">其他</option>
               </select>
             </Field>
@@ -673,8 +735,9 @@ function AddHoldingPage() {
               <input className="input" type="number" placeholder="0.0000" step="0.0001" value={form.quantity}
                 onChange={e => set("quantity", e.target.value)} />
             </Field>
-            <Field label="成本价">
-              <input className="input" type="number" placeholder="0.00" step="0.01" value={form.cost_price}
+            <Field label="成本价" hint={form.asset_type === "cash" ? "现金成本价固定为 1.0" : ""}>
+              <input className="input" type="number" placeholder="0.00" step="0.01" value={form.asset_type === "cash" ? "1.0" : form.cost_price}
+                disabled={form.asset_type === "cash"}
                 onChange={e => set("cost_price", e.target.value)} />
             </Field>
           </div>

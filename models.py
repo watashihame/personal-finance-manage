@@ -30,7 +30,7 @@ class Holding(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
 
-    transactions = relationship("Transaction", back_populates="holding", order_by="Transaction.tx_date", cascade="all, delete-orphan")
+    transactions = relationship("Transaction", back_populates="holding", order_by="Transaction.tx_date", cascade="all, delete-orphan", foreign_keys="[Transaction.holding_id]")
 
 
 class Transaction(Base):
@@ -45,10 +45,11 @@ class Transaction(Base):
     quantity = Column(Float, nullable=False)
     unit_price = Column(Float, nullable=False)
     fee = Column(Float, default=0.0)
+    counterparty_id = Column(Integer, ForeignKey("holdings.id"), nullable=True)
     notes = Column(String(500), default="")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    holding = relationship("Holding", back_populates="transactions")
+    holding = relationship("Holding", back_populates="transactions", foreign_keys=[holding_id])
 
 
 class PriceCache(Base):
@@ -124,6 +125,20 @@ def recalculate_holding(session, h) -> None:
 
 def init_db():
     Base.metadata.create_all(engine)
+    # Migration: add counterparty_id if missing (added 2026-05)
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    if "transactions" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("transactions")}
+        if "counterparty_id" not in cols:
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text(
+                        "ALTER TABLE transactions ADD COLUMN counterparty_id INTEGER REFERENCES holdings(id)"
+                    ))
+                    conn.commit()
+            except Exception:
+                pass  # race between gunicorn workers
 
 
 def get_session() -> Session:

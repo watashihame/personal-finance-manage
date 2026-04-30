@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 
 from datetime import date as dt_date
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
+from flask import Flask, request, redirect, url_for, jsonify, session
 from sqlalchemy import select, func
 
 from models import init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate, PriceHistory, PortfolioValueHistory, recalculate_holding
@@ -27,7 +27,7 @@ ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN", "").strip()
 init_db()
 
 MARKETS = ["CN", "US", "JP", "CRYPTO", "OTHER"]
-ASSET_TYPES = ["stock", "etf", "fund", "bond", "crypto", "other"]
+ASSET_TYPES = ["stock", "etf", "fund", "bond", "crypto", "cash", "other"]
 CURRENCIES = ["CNY", "USD", "JPY", "HKD", "EUR", "GBP"]
 
 MARKET_CURRENCY_DEFAULT = {
@@ -43,7 +43,7 @@ MARKET_CURRENCY_DEFAULT = {
 # Auth
 # ---------------------------------------------------------------------------
 
-_OPEN_ENDPOINTS = {"login", "logout", "static", "spa_root", "api_auth_login", "api_auth_status"}
+_OPEN_ENDPOINTS = {"static", "spa_root", "api_auth_login", "api_auth_status"}
 
 @app.before_request
 def require_auth():
@@ -58,7 +58,7 @@ def require_auth():
         return
     if request.path.startswith("/api/"):
         return jsonify({"error": "Unauthorized"}), 401
-    return redirect(url_for("login", next=request.path))
+    return redirect(url_for("spa_root"))
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +75,13 @@ def _compute_portfolio(holdings, prices: dict, rates: dict, prev_prices: dict) -
     total_cost = 0.0
 
     for h in holdings:
-        pc = prices.get(h.symbol)
-        current_price = pc.price if pc else None
+        is_cash = h.asset_type == "cash"
+        pc = None
+        if is_cash:
+            current_price = 1.0
+        else:
+            pc = prices.get(h.symbol)
+            current_price = pc.price if pc else None
         fx = rates.get(h.currency, 1.0)
 
         if current_price is not None:
@@ -88,7 +93,7 @@ def _compute_portfolio(holdings, prices: dict, rates: dict, prev_prices: dict) -
         pnl_cny = market_value_cny - cost_cny
         pnl_pct = (pnl_cny / cost_cny * 100) if cost_cny else 0.0
 
-        prev_price = prev_prices.get(h.symbol)
+        prev_price = prev_prices.get(h.symbol) if not is_cash else None
         if current_price is not None and prev_price and prev_price > 0:
             daily_change_pct = (current_price - prev_price) / prev_price * 100
         else:
@@ -161,268 +166,12 @@ def _load_portfolio_data():
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# SPA entry point
 # ---------------------------------------------------------------------------
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if not ACCESS_TOKEN:
-        return redirect(url_for("index"))
-    if request.method == "POST":
-        token = request.form.get("token", "")
-        if secrets.compare_digest(token, ACCESS_TOKEN):
-            session["authenticated"] = True
-            next_url = request.args.get("next", "")
-            if next_url.startswith("/") and not next_url.startswith("//"):
-                return redirect(next_url)
-            return redirect(url_for("index"))
-        flash("Token 不正确", "danger")
-    return render_template("login.html")
-
-
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect(url_for("login"))
-
 
 @app.route("/")
 def spa_root():
     return app.send_static_file("ui/Personal Finance.html")
-
-
-@app.route("/old")
-def index():
-    rows, total_value, total_cost = _load_portfolio_data()
-    total_pnl = total_value - total_cost
-    total_pnl_pct = (total_pnl / total_cost * 100) if total_cost else 0.0
-    top_rows = sorted(rows, key=lambda r: r["market_value_cny"], reverse=True)[:10]
-    return render_template(
-        "index.html",
-        rows=top_rows,
-        total_value=total_value,
-        total_cost=total_cost,
-        total_pnl=total_pnl,
-        total_pnl_pct=total_pnl_pct,
-        holding_count=len(rows),
-    )
-
-
-@app.route("/holdings")
-def holdings_list():
-    sort_by = request.args.get("sort", "market_value_cny")
-    sort_dir = request.args.get("dir", "desc")
-    tag_filter = request.args.get("tag", "").strip()
-
-    rows, total_value, total_cost = _load_portfolio_data()
-
-    # Collect all distinct tags across all holdings
-    all_tags = sorted({tag for r in rows for tag in r["tags"]})
-
-    # Apply tag filter
-    if tag_filter:
-        rows = [r for r in rows if tag_filter in r["tags"]]
-
-    total_pnl = sum(r["pnl_cny"] for r in rows)
-    filtered_value = sum(r["market_value_cny"] for r in rows)
-    filtered_cost = sum(r["cost_cny"] for r in rows)
-
-    reverse = sort_dir == "desc"
-    valid_sorts = {"name", "symbol", "market", "asset_type", "quantity",
-                   "cost_price", "current_price", "market_value_cny", "pnl_pct"}
-    if sort_by not in valid_sorts:
-        sort_by = "market_value_cny"
-
-    rows = sorted(rows, key=lambda r: (r[sort_by] or 0), reverse=reverse)
-
-    return render_template(
-        "holdings.html",
-        rows=rows,
-        total_value=filtered_value,
-        total_cost=filtered_cost,
-        total_pnl=total_pnl,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-        all_tags=all_tags,
-        tag_filter=tag_filter,
-    )
-
-
-@app.route("/holdings/add", methods=["GET", "POST"])
-def holding_add():
-    if request.method == "POST":
-        try:
-            raw_tags = request.form.get("tags", "")
-            tags = ",".join(t.strip() for t in raw_tags.split(",") if t.strip())
-            qty = float(request.form["quantity"])
-            cost = float(request.form["cost_price"])
-            h = Holding(
-                name=request.form["name"].strip(),
-                symbol=request.form["symbol"].strip().upper(),
-                market=request.form["market"],
-                asset_type=request.form["asset_type"],
-                currency=request.form["currency"],
-                quantity=qty,
-                cost_price=cost,
-                tags=tags,
-                notes=request.form.get("notes", "").strip(),
-            )
-            session = get_session()
-            try:
-                session.add(h)
-                session.flush()
-                tx = Transaction(
-                    holding_id=h.id,
-                    tx_type="BUY",
-                    tx_date=dt_date.today(),
-                    quantity=qty,
-                    unit_price=cost,
-                    fee=0.0,
-                    notes="初始建仓",
-                )
-                session.add(tx)
-                session.commit()
-                flash(f"已添加持仓：{h.name} ({h.symbol})", "success")
-            finally:
-                session.close()
-        except (ValueError, KeyError) as exc:
-            flash(f"输入有误：{exc}", "danger")
-        return redirect(url_for("holdings_list"))
-
-    return render_template(
-        "holding_form.html",
-        action="add",
-        holding=None,
-        markets=MARKETS,
-        asset_types=ASSET_TYPES,
-        currencies=CURRENCIES,
-        market_currency_default=MARKET_CURRENCY_DEFAULT,
-    )
-
-
-@app.route("/holdings/<int:holding_id>/edit", methods=["GET", "POST"])
-def holding_edit(holding_id: int):
-    session = get_session()
-    try:
-        h = session.get(Holding, holding_id)
-        if h is None:
-            flash("持仓不存在", "warning")
-            return redirect(url_for("holdings_list"))
-
-        if request.method == "POST":
-            try:
-                raw_tags = request.form.get("tags", "")
-                h.name = request.form["name"].strip()
-                h.symbol = request.form["symbol"].strip().upper()
-                h.market = request.form["market"]
-                h.asset_type = request.form["asset_type"]
-                h.currency = request.form["currency"]
-                h.quantity = float(request.form["quantity"])
-                h.cost_price = float(request.form["cost_price"])
-                h.tags = ",".join(t.strip() for t in raw_tags.split(",") if t.strip())
-                h.notes = request.form.get("notes", "").strip()
-                h.updated_at = datetime.now(timezone.utc)
-                session.commit()
-                flash(f"已更新：{h.name} ({h.symbol})", "success")
-            except (ValueError, KeyError) as exc:
-                flash(f"输入有误：{exc}", "danger")
-            return redirect(url_for("holdings_list"))
-
-        return render_template(
-            "holding_form.html",
-            action="edit",
-            holding=h,
-            markets=MARKETS,
-            asset_types=ASSET_TYPES,
-            currencies=CURRENCIES,
-            market_currency_default=MARKET_CURRENCY_DEFAULT,
-        )
-    finally:
-        session.close()
-
-
-@app.route("/holdings/<int:holding_id>/delete", methods=["POST"])
-def holding_delete(holding_id: int):
-    session = get_session()
-    try:
-        h = session.get(Holding, holding_id)
-        if h:
-            name = f"{h.name} ({h.symbol})"
-            session.query(Transaction).filter_by(holding_id=holding_id).delete()
-            session.delete(h)
-            session.commit()
-            flash(f"已删除：{name}", "info")
-        else:
-            flash("持仓不存在", "warning")
-    finally:
-        session.close()
-    return redirect(url_for("holdings_list"))
-
-
-# ---------------------------------------------------------------------------
-# Transaction routes
-# ---------------------------------------------------------------------------
-
-TX_TYPE_LABELS = {
-    "BUY": "买入",
-    "SELL": "卖出",
-    "TRANSFER_IN": "转入",
-    "TRANSFER_OUT": "转出",
-}
-
-
-@app.route("/holdings/<int:holding_id>/transactions")
-def holding_transactions(holding_id: int):
-    db = get_session()
-    try:
-        h = db.get(Holding, holding_id)
-        if h is None:
-            flash("持仓不存在", "warning")
-            return redirect(url_for("holdings_list"))
-        txs = db.execute(
-            select(Transaction)
-            .where(Transaction.holding_id == holding_id)
-            .order_by(Transaction.tx_date, Transaction.id)
-        ).scalars().all()
-        return render_template(
-            "transactions.html",
-            holding=h,
-            transactions=txs,
-            tx_type_labels=TX_TYPE_LABELS,
-            today=dt_date.today().isoformat(),
-        )
-    finally:
-        db.close()
-
-
-@app.route("/holdings/<int:holding_id>/transactions/add", methods=["POST"])
-def holding_transactions_add(holding_id: int):
-    db = get_session()
-    try:
-        h = db.get(Holding, holding_id)
-        if h is None:
-            flash("持仓不存在", "warning")
-            return redirect(url_for("holdings_list"))
-        try:
-            tx = Transaction(
-                holding_id=holding_id,
-                tx_type=request.form["tx_type"],
-                tx_date=dt_date.fromisoformat(request.form["tx_date"]),
-                quantity=float(request.form["quantity"]),
-                unit_price=float(request.form["unit_price"]),
-                fee=float(request.form.get("fee") or 0),
-                notes=request.form.get("notes", "").strip(),
-            )
-            db.add(tx)
-            db.flush()
-            recalculate_holding(db, h)
-            db.commit()
-            flash("交易记录已录入", "success")
-        except (ValueError, KeyError) as exc:
-            flash(f"输入有误：{exc}", "danger")
-    finally:
-        db.close()
-    return redirect(url_for("holding_transactions", holding_id=holding_id))
 
 
 # ---------------------------------------------------------------------------
@@ -637,23 +386,6 @@ def api_backfill_value_history():
         db.close()
 
 
-@app.route("/trends")
-def trends():
-    db = get_session()
-    try:
-        holdings = db.execute(select(Holding)).scalars().all()
-        all_tags = sorted({
-            t.strip()
-            for h in holdings
-            for t in (h.tags or "").split(",")
-            if t.strip()
-        })
-        holding_list = [{"symbol": h.symbol, "name": h.name} for h in holdings]
-        return render_template("trends.html", holding_list=holding_list, all_tags=all_tags)
-    finally:
-        db.close()
-
-
 @app.route("/api/holdings/search")
 def api_holdings_search():
     q = request.args.get("q", "").strip().lower()
@@ -689,8 +421,6 @@ def api_holding_add():
         cost_price = float(data["cost_price"])
     except (TypeError, ValueError):
         return jsonify({"error": "quantity 和 cost_price 必须为数字"}), 400
-    if quantity <= 0 or cost_price <= 0:
-        return jsonify({"error": "quantity 和 cost_price 必须大于 0"}), 400
 
     market = str(data["market"]).upper()
     asset_type = str(data["asset_type"]).lower()
@@ -701,6 +431,13 @@ def api_holding_add():
         return jsonify({"error": f"asset_type 无效，可选值: {ASSET_TYPES}"}), 400
     if currency not in CURRENCIES:
         return jsonify({"error": f"currency 无效，可选值: {CURRENCIES}"}), 400
+
+    if asset_type == "cash":
+        if quantity <= 0:
+            return jsonify({"error": "现金数量必须大于 0"}), 400
+    else:
+        if quantity <= 0 or cost_price <= 0:
+            return jsonify({"error": "quantity 和 cost_price 必须大于 0"}), 400
 
     raw_tags = data.get("tags", "")
     if isinstance(raw_tags, list):
@@ -721,6 +458,17 @@ def api_holding_add():
     session = get_session()
     try:
         session.add(h)
+        session.flush()
+        tx = Transaction(
+            holding_id=h.id,
+            tx_type="BUY",
+            tx_date=dt_date.today(),
+            quantity=quantity,
+            unit_price=cost_price,
+            fee=0.0,
+            notes="初始建仓",
+        )
+        session.add(tx)
         session.commit()
         return jsonify({"ok": True, "id": h.id, "name": h.name, "symbol": h.symbol})
     finally:
@@ -925,20 +673,93 @@ def api_transaction_add(holding_id: int):
             return jsonify({"error": "持仓不存在"}), 404
         data = request.get_json(force=True)
         try:
+            tx_type = str(data["type"]).upper()
+            quantity = float(data["quantity"])
+            unit_price = float(data["unitPrice"])
+            fee = float(data.get("fee") or 0)
+            notes = str(data.get("notes", "")).strip()
+            counterparty_id = data.get("counterpartyHoldingId")
+            counterparty_unit_price = data.get("counterpartyUnitPrice")
+
             tx = Transaction(
                 holding_id=holding_id,
-                tx_type=str(data["type"]).upper(),
+                tx_type=tx_type,
                 tx_date=dt_date.fromisoformat(data["date"]),
-                quantity=float(data["quantity"]),
-                unit_price=float(data["unitPrice"]),
-                fee=float(data.get("fee") or 0),
-                notes=str(data.get("notes", "")).strip(),
+                quantity=quantity,
+                unit_price=unit_price,
+                fee=fee,
+                notes=notes,
             )
             db.add(tx)
             db.flush()
+
+            # Create paired transaction on counterparty
+            paired_tx = None
+            if counterparty_id is not None:
+                cparty = db.get(Holding, counterparty_id)
+                if cparty is None:
+                    return jsonify({"error": "对方持仓不存在"}), 404
+
+                # Determine paired direction: BUY↔SELL
+                if tx_type == "BUY":
+                    paired_type = "SELL"
+                elif tx_type == "SELL":
+                    paired_type = "BUY"
+                elif tx_type == "TRANSFER_IN":
+                    paired_type = "TRANSFER_OUT"
+                else:
+                    paired_type = "TRANSFER_IN"
+
+                # Calculate paired quantity
+                if cparty.asset_type == "cash":
+                    # Cash: quantity = value in cash units (unit_price=1)
+                    if tx_type in ("BUY", "TRANSFER_IN"):
+                        paired_qty = quantity * unit_price + fee
+                    else:
+                        paired_qty = quantity * unit_price - fee
+                    paired_up = 1.0
+                else:
+                    # Non-cash conversion: user specifies counterparty price
+                    paired_qty = quantity * unit_price
+                    if tx_type in ("BUY", "TRANSFER_IN"):
+                        paired_qty += fee
+                    else:
+                        paired_qty -= fee
+                    if counterparty_unit_price:
+                        paired_up = float(counterparty_unit_price)
+                        paired_qty = paired_qty / paired_up
+                    else:
+                        paired_up = counterparty_unit_price  # will fail validation
+
+                if paired_qty <= 0:
+                    return jsonify({"error": f"对方交易数量必须大于0，当前计算值为{paired_qty}"}), 400
+                if paired_up is None or paired_up <= 0:
+                    return jsonify({"error": "转换为其他投资标的需要提供目标价格 (counterpartyUnitPrice)"}), 400
+
+                paired_tx = Transaction(
+                    holding_id=counterparty_id,
+                    tx_type=paired_type,
+                    tx_date=dt_date.fromisoformat(data["date"]),
+                    quantity=paired_qty,
+                    unit_price=paired_up,
+                    fee=0.0,
+                    notes=f"来自 {h.symbol} 的{'买入' if paired_type == 'BUY' else '卖出'}",
+                )
+                db.add(paired_tx)
+                db.flush()
+
+                # Link both transactions to each other
+                tx.counterparty_id = counterparty_id
+                paired_tx.counterparty_id = holding_id
+
             recalculate_holding(db, h)
+            if paired_tx:
+                recalculate_holding(db, cparty)
             db.commit()
-            return jsonify({"ok": True, "id": tx.id})
+            result = {"ok": True, "id": tx.id}
+            if paired_tx:
+                result["pairedTransactionId"] = paired_tx.id
+            return jsonify(result)
         except (ValueError, KeyError) as exc:
             return jsonify({"error": str(exc)}), 400
     finally:
@@ -1001,42 +822,22 @@ def api_transactions():
         if holding_id:
             q = q.where(Transaction.holding_id == holding_id)
         txs = db.execute(q).scalars().all()
+        cp_ids = {t.counterparty_id for t in txs if t.counterparty_id}
+        cp_map = {}
+        if cp_ids:
+            cp_holdings = db.execute(
+                select(Holding).where(Holding.id.in_(cp_ids))
+            ).scalars().all()
+            cp_map = {h.id: h.symbol for h in cp_holdings}
         return jsonify([{
             "id": t.id, "holdingId": t.holding_id, "type": t.tx_type,
             "date": t.tx_date.isoformat(), "quantity": t.quantity,
             "unitPrice": t.unit_price, "fee": t.fee or 0.0, "notes": t.notes or "",
+            "counterpartyId": t.counterparty_id,
+            "counterpartySymbol": cp_map.get(t.counterparty_id) if t.counterparty_id else None,
         } for t in txs])
     finally:
         db.close()
-
-
-# ---------------------------------------------------------------------------
-# Template filters
-# ---------------------------------------------------------------------------
-
-@app.template_filter("fmt_num")
-def fmt_num(value, decimals=2):
-    if value is None:
-        return "—"
-    try:
-        return f"{float(value):,.{decimals}f}"
-    except (TypeError, ValueError):
-        return str(value)
-
-
-@app.template_filter("fmt_pct")
-def fmt_pct(value):
-    if value is None:
-        return "—"
-    sign = "+" if value >= 0 else ""
-    return f"{sign}{value:.2f}%"
-
-
-@app.template_filter("pnl_class")
-def pnl_class(value):
-    if value is None:
-        return ""
-    return "pnl-positive" if value >= 0 else "pnl-negative"
 
 
 if __name__ == "__main__":

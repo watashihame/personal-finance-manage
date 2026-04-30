@@ -369,7 +369,8 @@ def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
                 manual_symbols.add(row.symbol)
 
         symbols_to_fetch = [
-            h.symbol for h in holdings if h.symbol not in manual_symbols
+            h.symbol for h in holdings
+            if h.symbol not in manual_symbols and h.asset_type != "cash"
         ]
 
         fund_syms      = [s for s in symbols_to_fetch if _is_cn_fund(s)]
@@ -434,12 +435,23 @@ def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
             fx = rates_cny.get(h.currency, 1.0)
             holding_values[sym] = qty * price * fx
 
+        # Add cash holdings (price = 1.0, no historical quantity needed)
+        for h in holdings:
+            if h.asset_type != "cash":
+                continue
+            if h.quantity <= 0:
+                continue
+            fx = rates_cny.get(h.currency, 1.0)
+            holding_values[h.symbol] = h.quantity * 1.0 * fx
+
         for sym, val in holding_values.items():
             _upsert_portfolio_value_history(session, today, sym, "holding", val)
 
         tag_totals: dict[str, float] = {}
         for sym, val in holding_values.items():
             h = holding_map.get(sym)
+            if h is None:
+                continue
             for tag in (t.strip() for t in (h.tags or "").split(",") if t.strip()):
                 tag_totals[tag] = tag_totals.get(tag, 0.0) + val
         for tag, val in tag_totals.items():

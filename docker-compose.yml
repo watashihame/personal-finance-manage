@@ -35,7 +35,6 @@ services:
       - ./app.py:/app/app.py:ro
       - ./models.py:/app/models.py:ro
       - ./price_fetcher.py:/app/price_fetcher.py:ro
-      - ./templates:/app/templates:ro
       # New React UI files (bind mount overlays named volume subdirectory)
       - ./static/ui:/app/static/ui:ro
 

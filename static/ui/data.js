@@ -4,12 +4,14 @@
 const FX = { CNY: 1, USD: 7.25, JPY: 0.048, HKD: 0.93, EUR: 7.8, GBP: 9.1 };
 
 function computeRow(h) {
+  const isCash = h.type === "cash" || h.asset_type === "cash" || h.assetType === "cash";
+  const price = isCash ? 1.0 : (h.currentPrice ?? h.current_price);
   const fx = FX[h.currency] || 1;
-  const valueCny = h.valueCny ?? (h.quantity * (h.currentPrice ?? h.costPrice) * fx);
+  const valueCny = h.valueCny ?? (h.quantity * price * fx);
   const costCny  = h.costCny  ?? (h.quantity * h.costPrice * fx);
   const pnlCny   = h.pnlCny   ?? (valueCny - costCny);
   const pnlPct   = h.pnlPct   ?? (costCny > 0 ? (pnlCny / costCny) * 100 : 0);
-  return { ...h, valueCny, costCny, pnlCny, pnlPct };
+  return { ...h, currentPrice: price, valueCny, costCny, pnlCny, pnlPct };
 }
 
 const fmt = {
@@ -84,6 +86,8 @@ async function initFromAPI() {
       quantity: t.quantity,
       price: t.unitPrice,
       currency: h.currency || "CNY",
+      fee: t.fee || 0,
+      counterpartySymbol: t.counterpartySymbol || null,
       note: t.notes,
     };
   });
