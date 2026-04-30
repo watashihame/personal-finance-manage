@@ -3,7 +3,7 @@
 
 const { useState, useEffect } = React;
 
-function VariantApp({ variant, dataVersion }) {
+function VariantApp({ variant, dataVersion, theme, onToggleTheme }) {
   const [page, setPage] = useState("dashboard");
   const [params, setParams] = useState({});
 
@@ -25,7 +25,7 @@ function VariantApp({ variant, dataVersion }) {
         minHeight: "100%", display: "flex", flexDirection: "column",
         background: "var(--bg)", color: "var(--fg)",
       }}>
-        <Navbar variant={variant.toUpperCase()} dataVersion={dataVersion} />
+        <Navbar variant={variant.toUpperCase()} dataVersion={dataVersion} theme={theme} onToggleTheme={onToggleTheme} />
         <main style={{ flex: 1, position: "relative" }}>
           <div key={page + variant + dataVersion}>{content}</div>
         </main>
@@ -69,10 +69,40 @@ function ErrorScreen({ message }) {
   );
 }
 
+function _getSystemTheme() {
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 function App() {
   const [status, setStatus] = useState("loading");
   const [errorMsg, setErrorMsg] = useState("");
   const [dataVersion, setDataVersion] = useState(0);
+
+  // Theme: localStorage override → system default
+  const [theme, setTheme] = useState(() => localStorage.getItem("theme") || _getSystemTheme());
+
+  // Apply theme to DOM whenever it changes
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  // Follow system changes unless user has manually overridden
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handle = e => {
+      if (!localStorage.getItem("theme")) {
+        setTheme(e.matches ? "dark" : "light");
+      }
+    };
+    mq.addEventListener("change", handle);
+    return () => mq.removeEventListener("change", handle);
+  }, []);
+
+  const toggleTheme = () => {
+    const next = theme === "light" ? "dark" : "light";
+    setTheme(next);
+    localStorage.setItem("theme", next);
+  };
 
   const loadData = () =>
     window.initFromAPI()
@@ -109,7 +139,7 @@ function App() {
     }} />
   );
 
-  return <VariantApp variant="b" dataVersion={dataVersion} />;
+  return <VariantApp variant="b" dataVersion={dataVersion} theme={theme} onToggleTheme={toggleTheme} />;
 }
 
 window.App = App;

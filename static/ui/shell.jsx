@@ -33,7 +33,7 @@ function Router({ children, initial = "dashboard" }) {
 const useRoute = () => useContext(RouteCtx);
 
 // ---- Top navbar ----
-function Navbar({ variant, dataVersion }) {
+function Navbar({ variant, dataVersion, theme, onToggleTheme }) {
   const { page, navigate } = useRoute();
   const items = [
     { id: "dashboard",    label: "仪表盘" },
@@ -98,6 +98,7 @@ function Navbar({ variant, dataVersion }) {
           <span style={{ margin: "0 8px", opacity: 0.4 }}>·</span>
           JPY/CNY <span style={{ color: "var(--fg-1)" }}>{FX.JPY.toFixed(4)}</span>
         </span>
+        <ThemeToggle theme={theme} onToggle={onToggleTheme} />
         <RefreshButton />
       </div>
     </header>
@@ -153,6 +154,20 @@ function StatusBar({ variant }) {
   );
 }
 
+function ThemeToggle({ theme, onToggle }) {
+  const isDark = theme === "dark";
+  return (
+    <button
+      className="btn sm"
+      onClick={onToggle}
+      title={isDark ? "切换到浅色模式" : "切换到深色模式"}
+      style={{ minWidth: 32, padding: "0 8px" }}
+    >
+      <span style={{ fontSize: 14, lineHeight: 1 }}>{isDark ? "☀" : "☾"}</span>
+    </button>
+  );
+}
+
 function RefreshButton() {
   const [loading, setLoading] = useState(false);
   const handleClick = async () => {
@@ -173,4 +188,4 @@ function RefreshButton() {
   );
 }
 
-Object.assign(window, { ThemeProvider, useTheme, Router, useRoute, Navbar, StatusBar, BrandMark, RefreshButton });
+Object.assign(window, { ThemeProvider, useTheme, Router, useRoute, Navbar, StatusBar, BrandMark, RefreshButton, ThemeToggle });

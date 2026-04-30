@@ -223,6 +223,7 @@ function HoldingsPreviewTable() {
         <thead>
           <tr>
             <th>名称</th><th>代码</th><th>市场</th>
+            <th>标签</th>
             <th className="num">持有量</th>
             <th className="num">现价</th>
             <th className="num">市值 (¥)</th>
@@ -234,13 +235,22 @@ function HoldingsPreviewTable() {
         <tbody>
           {rows.map(r => (
             <tr key={r.id}>
-              <td style={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</td>
+              <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</td>
               <td><code style={{ fontSize: 11, color: "var(--fg-2)" }}>{r.symbol}</code></td>
               <td><span className="chip">{MARKET_LABEL[r.market]}</span></td>
+              <td>
+                <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                  {(r.tags || []).slice(0, 2).map(t => (
+                    <span key={t} className="chip" style={{ background: "var(--bg-1)" }}>{t}</span>
+                  ))}
+                </div>
+              </td>
               <td className="num">{fmt.qty(r.quantity)}</td>
               <td className="num">{fmt.num(r.currentPrice, 2)} <span style={{ color: "var(--fg-3)", fontSize: 10 }}>{r.currency}</span></td>
               <td className="num" style={{ fontWeight: 500 }}>{fmt.num(r.valueCny, 2)}</td>
-              <td className="num" style={{ color: r.daily >= 0 ? "var(--up)" : "var(--down)" }}>{fmt.pct(r.daily)}</td>
+              <td className="num" style={{ color: r.daily == null ? "var(--fg-3)" : r.daily >= 0 ? "var(--up)" : "var(--down)" }}>
+                {r.daily == null ? "—" : fmt.pct(r.daily)}
+              </td>
               <td className="num" style={{ color: r.pnlPct >= 0 ? "var(--up)" : "var(--down)" }}>{fmt.pct(r.pnlPct)}</td>
               <td><Sparkline data={r.spark} width={50} height={18} /></td>
             </tr>

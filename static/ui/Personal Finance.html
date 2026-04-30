@@ -16,7 +16,12 @@
   body { background: var(--bg); }
 </style>
 
-<script>document.documentElement.setAttribute("data-theme","light");document.documentElement.setAttribute("data-pnl","red-up");document.documentElement.setAttribute("data-density","standard");</script>
+<script>
+  var _t = localStorage.getItem("theme") || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", _t);
+  document.documentElement.setAttribute("data-pnl", "red-up");
+  document.documentElement.setAttribute("data-density", "standard");
+</script>
 </head>
 <body>
 
