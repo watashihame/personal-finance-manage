@@ -46,6 +46,16 @@ def _is_cn_fund(symbol: str) -> bool:
     return bool(re.match(r'^\d{6}(\.OF)?$', symbol, re.IGNORECASE))
 
 
+ICBC_GOLD_URL = "https://mybank.icbc.com.cn/icbc/newperbank/perbank3/gold/goldaccrual_query_out.jsp"
+ICBC_GOLD_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://mybank.icbc.com.cn/",
+}
+
+
+def _is_icbc_gold(symbol: str) -> bool:
+    return symbol.upper() == "ICBC-GOLD"
+
 
 # ---------------------------------------------------------------------------
 # Exchange rates
@@ -186,6 +196,61 @@ def _fetch_eastmoney_fund(symbols: list[str]) -> dict[str, float | None]:
 
 
 # ---------------------------------------------------------------------------
+# ICBC gold accumulation (工银积存金) price scraper
+# ---------------------------------------------------------------------------
+
+class _LegacySSLAdapter(requests.adapters.HTTPAdapter):
+    """Allow legacy TLS renegotiation for older bank servers (e.g., ICBC)."""
+    def init_poolmanager(self, *args, **kwargs):
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
+        kwargs["ssl_context"] = ctx
+        super().init_poolmanager(*args, **kwargs)
+
+
+def _fetch_icbc_gold(symbols: list[str]) -> dict[str, float | None]:
+    """从工行积存金页面抓取实时主动积存价格（CNY/克）。
+
+    页面 HTML 中含有 id="activeprice_<prodcode>" 的 <td>，初始值即为实时价格。
+    """
+    try:
+        from bs4 import BeautifulSoup
+        session = requests.Session()
+        session.mount("https://", _LegacySSLAdapter())
+        resp = session.get(ICBC_GOLD_URL, headers=ICBC_GOLD_HEADERS, timeout=30)
+        resp.raise_for_status()
+        resp.encoding = "gbk"
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # 策略1：id="activeprice_<prodcode>" 即实时主动积存价格
+        price = None
+        tag = soup.find(id=re.compile(r'^activeprice_'))
+        if tag:
+            candidate = float(tag.get_text(strip=True))
+            if 300 < candidate < 3000:
+                price = candidate
+
+        # 策略2：全文正则回退 — id="activeprice_..." 后跟数字
+        if price is None:
+            m = re.search(r'id="activeprice_[^"]*"[^>]*>(\d{3,4}\.\d{2})', resp.text)
+            if m:
+                candidate = float(m.group(1))
+                if 300 < candidate < 3000:
+                    price = candidate
+
+        if price is None:
+            logger.warning("ICBC gold: 未找到 activeprice 字段")
+        else:
+            logger.info("ICBC gold price fetched: %.2f CNY/g", price)
+
+        return {sym: price for sym in symbols}
+    except Exception as exc:
+        logger.error("ICBC gold fetch failed: %s", exc)
+        return {sym: None for sym in symbols}
+
+
+# ---------------------------------------------------------------------------
 # US / JP / Crypto prices via yfinance
 # ---------------------------------------------------------------------------
 
@@ -307,15 +372,19 @@ def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
             h.symbol for h in holdings if h.symbol not in manual_symbols
         ]
 
-        fund_syms   = [s for s in symbols_to_fetch if _is_cn_fund(s)]
-        ashare_syms = [s for s in symbols_to_fetch if _is_ashare(s)]
-        other_syms  = [s for s in symbols_to_fetch if not _is_ashare(s) and not _is_cn_fund(s)]
+        fund_syms      = [s for s in symbols_to_fetch if _is_cn_fund(s)]
+        ashare_syms    = [s for s in symbols_to_fetch if _is_ashare(s)]
+        icbc_gold_syms = [s for s in symbols_to_fetch if _is_icbc_gold(s)]
+        other_syms     = [s for s in symbols_to_fetch if
+                          not _is_ashare(s) and not _is_cn_fund(s) and not _is_icbc_gold(s)]
 
         all_results: dict[str, float | None] = {}
         if fund_syms:
             all_results.update(_fetch_eastmoney_fund(fund_syms))
         if ashare_syms:
             all_results.update(_fetch_tushare(ashare_syms))
+        if icbc_gold_syms:
+            all_results.update(_fetch_icbc_gold(icbc_gold_syms))
         if other_syms:
             all_results.update(_fetch_yfinance(other_syms))
 
@@ -337,6 +406,8 @@ def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
                 source = "eastmoney"
             elif _is_ashare(sym):
                 source = "tushare"
+            elif _is_icbc_gold(sym):
+                source = "icbc"
             else:
                 source = "yfinance"
             _upsert_cache(session, sym, price, currency, source)
