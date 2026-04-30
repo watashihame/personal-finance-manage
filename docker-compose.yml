@@ -34,7 +34,10 @@ services:
       # Mount source code so local edits take effect without rebuilding
       - ./app.py:/app/app.py:ro
       - ./models.py:/app/models.py:ro
+      - ./price_fetcher.py:/app/price_fetcher.py:ro
       - ./templates:/app/templates:ro
+      # New React UI files (bind mount overlays named volume subdirectory)
+      - ./static/ui:/app/static/ui:ro
 
   nginx:
     image: nginx:1.27-alpine
@@ -44,6 +47,8 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - static_files:/app/static:ro
+      # New React UI files served directly by nginx
+      - ./static/ui:/app/static/ui:ro
     depends_on:
       - web
       - mcp

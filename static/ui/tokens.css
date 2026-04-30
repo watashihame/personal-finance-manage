@@ -1,0 +1,362 @@
+/* ========================================================================
+   Personal Finance — Design Tokens
+   Terminal / data-density aesthetic, neutral + monochrome accent
+   Three variants share these tokens, override locally where needed.
+   ======================================================================== */
+
+:root {
+  /* Type stacks ---------------------------------------------------------- */
+  --font-ui: "Inter", "PingFang SC", "Hiragino Sans GB", -apple-system, "Helvetica Neue", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Roboto Mono", ui-monospace, Menlo, Consolas, monospace;
+  --font-display: "Inter", "PingFang SC", -apple-system, sans-serif;
+
+  /* Type scale (ui) ----------------------------------------------------- */
+  --fs-micro: 10px;
+  --fs-xxs: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 28px;
+  --fs-3xl: 40px;
+  --fs-4xl: 56px;
+
+  /* Spacing ------------------------------------------------------------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --sp-8: 40px;
+  --sp-9: 56px;
+  --sp-10: 72px;
+
+  /* Radius -------------------------------------------------------------- */
+  --r-0: 0px;
+  --r-1: 2px;
+  --r-2: 4px;
+  --r-3: 6px;
+  --r-4: 10px;
+  --r-pill: 999px;
+
+  /* ===== Light theme — neutral cool-grey base ===== */
+  --bg: #fafaf9;
+  --bg-1: #f4f4f2;
+  --bg-2: #ececea;
+  --surface: #ffffff;
+  --surface-2: #fafaf9;
+  --surface-hover: #f4f4f2;
+  --border: #e7e6e2;
+  --border-strong: #d4d3cd;
+  --border-subtle: #efeeea;
+
+  --fg: #18181a;
+  --fg-1: #2c2c30;
+  --fg-2: #5b5b62;
+  --fg-3: #8a8a92;
+  --fg-4: #b8b8be;
+
+  --accent: #1f1f24;             /* monochrome strong accent (text/buttons) */
+  --accent-fg: #fafaf9;
+  --accent-soft: #ececea;
+
+  /* Up / down (red-up by default = 中式) */
+  --up: #c8323b;
+  --up-soft: #fbe9eb;
+  --up-faint: rgba(200, 50, 59, 0.08);
+  --down: #1d7a4d;
+  --down-soft: #e6f3ec;
+  --down-faint: rgba(29, 122, 77, 0.08);
+
+  /* Categorical palette (used sparingly for charts) */
+  --cat-1: #4a5d7e;
+  --cat-2: #8a6f4d;
+  --cat-3: #5d6b54;
+  --cat-4: #7a5566;
+  --cat-5: #9c8054;
+  --cat-6: #4f6b6f;
+  --cat-7: #6b5d7a;
+  --cat-8: #8b7355;
+
+  /* Effects */
+  --shadow-1: 0 1px 0 rgba(20, 20, 24, 0.04), 0 1px 2px rgba(20, 20, 24, 0.04);
+  --shadow-2: 0 1px 0 rgba(20, 20, 24, 0.04), 0 4px 12px rgba(20, 20, 24, 0.06);
+  --shadow-3: 0 8px 32px rgba(20, 20, 24, 0.08);
+
+  --grid-line: rgba(20, 20, 24, 0.04);
+
+  --transition-fast: 120ms cubic-bezier(0.2, 0, 0, 1);
+  --transition-med: 220ms cubic-bezier(0.2, 0, 0, 1);
+  --transition-slow: 360ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ===== Dark theme ===== */
+[data-theme="dark"] {
+  --bg: #0e0e10;
+  --bg-1: #141416;
+  --bg-2: #1a1a1d;
+  --surface: #141416;
+  --surface-2: #1a1a1d;
+  --surface-hover: #1f1f23;
+  --border: #26262a;
+  --border-strong: #3a3a3f;
+  --border-subtle: #1e1e22;
+
+  --fg: #f1f1ee;
+  --fg-1: #d8d8d3;
+  --fg-2: #9d9d97;
+  --fg-3: #6e6e69;
+  --fg-4: #4a4a47;
+
+  --accent: #f1f1ee;
+  --accent-fg: #0e0e10;
+  --accent-soft: #1f1f23;
+
+  --up: #ff5c66;
+  --up-soft: rgba(255, 92, 102, 0.16);
+  --up-faint: rgba(255, 92, 102, 0.08);
+  --down: #3acf80;
+  --down-soft: rgba(58, 207, 128, 0.16);
+  --down-faint: rgba(58, 207, 128, 0.08);
+
+  --cat-1: #7d92b8;
+  --cat-2: #c4a37e;
+  --cat-3: #93a585;
+  --cat-4: #b88aa0;
+  --cat-5: #d4b585;
+  --cat-6: #82a4a8;
+  --cat-7: #a594bd;
+  --cat-8: #c4a585;
+
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 1px 0 rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.3);
+  --shadow-3: 0 12px 40px rgba(0, 0, 0, 0.5);
+
+  --grid-line: rgba(241, 241, 238, 0.05);
+}
+
+/* ===== Pnl color swap (green-up mode) ===== */
+[data-pnl="green-up"] {
+  --up: #1d7a4d;
+  --up-soft: #e6f3ec;
+  --up-faint: rgba(29, 122, 77, 0.08);
+  --down: #c8323b;
+  --down-soft: #fbe9eb;
+  --down-faint: rgba(200, 50, 59, 0.08);
+}
+
+[data-theme="dark"][data-pnl="green-up"] {
+  --up: #3acf80;
+  --up-soft: rgba(58, 207, 128, 0.16);
+  --up-faint: rgba(58, 207, 128, 0.08);
+  --down: #ff5c66;
+  --down-soft: rgba(255, 92, 102, 0.16);
+  --down-faint: rgba(255, 92, 102, 0.08);
+}
+
+/* ===== Density modes ===== */
+[data-density="compact"] {
+  --row-h: 28px;
+  --pad-card: 14px;
+  --pad-cell: 6px 10px;
+}
+[data-density="comfortable"] {
+  --row-h: 40px;
+  --pad-card: 24px;
+  --pad-cell: 12px 16px;
+}
+:root {
+  --row-h: 34px;
+  --pad-card: 18px;
+  --pad-cell: 9px 12px;
+}
+
+/* ========================================================================
+   Base resets / utilities
+   ======================================================================== */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-ui);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv11", "ss01";
+}
+
+button { font-family: inherit; }
+a { color: inherit; }
+code, .mono, .num {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum", "zero";
+}
+.num { font-variant-numeric: tabular-nums; }
+
+::selection { background: var(--fg); color: var(--bg); }
+
+/* Pnl colors */
+.up { color: var(--up); }
+.down { color: var(--down); }
+.muted { color: var(--fg-2); }
+.muted-2 { color: var(--fg-3); }
+
+/* Generic chip */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--r-2);
+  font-size: var(--fs-xxs);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  background: var(--bg-1);
+  color: var(--fg-2);
+  border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.chip.solid { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+.chip.up    { background: var(--up-faint); color: var(--up); border-color: transparent; }
+.chip.down  { background: var(--down-faint); color: var(--down); border-color: transparent; }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  height: 32px;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  border-radius: var(--r-2);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--surface-hover); border-color: var(--fg-3); }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.btn.primary:hover { background: var(--fg-1); border-color: var(--fg-1); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.ghost:hover { background: var(--surface-hover); }
+.btn.sm { height: 26px; padding: 0 10px; font-size: var(--fs-xs); }
+.btn.xs { height: 22px; padding: 0 8px; font-size: var(--fs-xxs); border-radius: var(--r-1); }
+
+/* Inputs */
+.input, .select {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--r-2);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.input:focus, .select:focus { border-color: var(--fg-1); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* Cards */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  overflow: hidden;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.card-head .title { display: flex; align-items: center; gap: 8px; }
+.card-body { padding: 18px; }
+
+/* Tables (data-dense) */
+.dtable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.dtable th, .dtable td {
+  padding: var(--pad-cell);
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.dtable th {
+  font-size: var(--fs-xxs);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  background: var(--surface-2);
+  position: sticky; top: 0;
+}
+.dtable td.num, .dtable th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.dtable tbody tr { transition: background var(--transition-fast); }
+.dtable tbody tr:hover { background: var(--surface-hover); }
+
+/* Layout helpers */
+.row { display: flex; }
+.col { display: flex; flex-direction: column; }
+.gap-1 { gap: 4px; } .gap-2 { gap: 8px; } .gap-3 { gap: 12px; } .gap-4 { gap: 16px; } .gap-6 { gap: 24px; }
+.center { display: flex; align-items: center; justify-content: center; }
+.between { display: flex; align-items: center; justify-content: space-between; }
+
+/* Subtle scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Sparkline base sizing */
+.spark { display: block; }
+
+/* Pulse dot (live indicator) — very subtle */
+.pulse {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--down); display: inline-block;
+  position: relative;
+}
+.pulse::after {
+  content: ""; position: absolute; inset: -3px;
+  border-radius: 50%;
+  background: var(--down);
+  opacity: 0.4;
+  animation: pulse 2.4s ease-out infinite;
+}
+@keyframes pulse {
+  0% { transform: scale(0.6); opacity: 0.5; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+
+/* Page transition */
+.page-enter {
+  animation: pageEnter var(--transition-med) ease-out both;
+}
+@keyframes pageEnter {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Focus rings */
+:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}

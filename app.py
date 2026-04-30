@@ -43,11 +43,13 @@ MARKET_CURRENCY_DEFAULT = {
 # Auth
 # ---------------------------------------------------------------------------
 
+_OPEN_ENDPOINTS = {"login", "logout", "static", "spa_root", "api_auth_login", "api_auth_status"}
+
 @app.before_request
 def require_auth():
     if not ACCESS_TOKEN:
         return
-    if request.endpoint in ("login", "logout", "static"):
+    if request.endpoint in _OPEN_ENDPOINTS:
         return
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer ") and secrets.compare_digest(auth[7:], ACCESS_TOKEN):
@@ -185,11 +187,15 @@ def logout():
 
 
 @app.route("/")
+def spa_root():
+    return app.send_static_file("ui/Personal Finance.html")
+
+
+@app.route("/old")
 def index():
     rows, total_value, total_cost = _load_portfolio_data()
     total_pnl = total_value - total_cost
     total_pnl_pct = (total_pnl / total_cost * 100) if total_cost else 0.0
-    # Show top 10 by value on dashboard
     top_rows = sorted(rows, key=lambda r: r["market_value_cny"], reverse=True)[:10]
     return render_template(
         "index.html",
@@ -779,6 +785,205 @@ def api_holding_tags(holding_id: int):
         return jsonify({"ok": True, "id": h.id, "symbol": h.symbol, "tags": tag_list})
     finally:
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# SPA Auth API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    if not ACCESS_TOKEN:
+        session["authenticated"] = True
+        return jsonify({"ok": True})
+    data = request.get_json(force=True)
+    token = str(data.get("token", "")).strip()
+    if secrets.compare_digest(token, ACCESS_TOKEN):
+        session["authenticated"] = True
+        return jsonify({"ok": True})
+    return jsonify({"error": "Token 不正确"}), 401
+
+
+@app.route("/api/auth/status")
+def api_auth_status():
+    requires_auth = bool(ACCESS_TOKEN)
+    authenticated = not requires_auth or bool(session.get("authenticated"))
+    return jsonify({"authenticated": authenticated, "requiresAuth": requires_auth})
+
+
+# ---------------------------------------------------------------------------
+# SPA Data API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/holdings", methods=["GET"])
+def api_holdings_list():
+    rows, _, _ = _load_portfolio_data()
+    db = get_session()
+    try:
+        cutoff = dt_date.today() - timedelta(days=60)
+        spark_rows = db.execute(
+            select(PriceHistory.symbol, PriceHistory.price)
+            .where(PriceHistory.date >= cutoff)
+            .order_by(PriceHistory.symbol, PriceHistory.date)
+        ).all()
+        spark_map: dict[str, list] = {}
+        for sr in spark_rows:
+            spark_map.setdefault(sr.symbol, []).append(sr.price)
+        return jsonify([{
+            "id": r["id"],
+            "name": r["name"],
+            "symbol": r["symbol"],
+            "market": r["market"],
+            "type": r["asset_type"],
+            "currency": r["currency"],
+            "quantity": r["quantity"],
+            "costPrice": r["cost_price"],
+            "currentPrice": r["current_price"],
+            "daily": r["daily_change_pct"],
+            "valueCny": r["market_value_cny"],
+            "costCny": r["cost_cny"],
+            "pnlCny": r["pnl_cny"],
+            "pnlPct": r["pnl_pct"],
+            "tags": r["tags"],
+            "spark": spark_map.get(r["symbol"], []),
+            "isManual": r["is_manual"],
+            "priceStale": r["price_stale"],
+        } for r in rows])
+    finally:
+        db.close()
+
+
+@app.route("/api/holdings/<int:holding_id>", methods=["GET"])
+def api_holding_detail(holding_id: int):
+    rows, _, _ = _load_portfolio_data()
+    r = next((x for x in rows if x["id"] == holding_id), None)
+    if r is None:
+        return jsonify({"error": "持仓不存在"}), 404
+    db = get_session()
+    try:
+        txs = db.execute(
+            select(Transaction)
+            .where(Transaction.holding_id == holding_id)
+            .order_by(Transaction.tx_date.desc(), Transaction.id.desc())
+        ).scalars().all()
+        cutoff = dt_date.today() - timedelta(days=60)
+        spark = db.execute(
+            select(PriceHistory.price)
+            .where(PriceHistory.symbol == r["symbol"], PriceHistory.date >= cutoff)
+            .order_by(PriceHistory.date)
+        ).scalars().all()
+        return jsonify({
+            "id": r["id"], "name": r["name"], "symbol": r["symbol"],
+            "market": r["market"], "type": r["asset_type"],
+            "currency": r["currency"], "quantity": r["quantity"],
+            "costPrice": r["cost_price"], "currentPrice": r["current_price"],
+            "daily": r["daily_change_pct"], "valueCny": r["market_value_cny"],
+            "costCny": r["cost_cny"], "pnlCny": r["pnl_cny"],
+            "pnlPct": r["pnl_pct"], "tags": r["tags"],
+            "spark": list(spark), "isManual": r["is_manual"],
+            "priceStale": r["price_stale"],
+            "transactions": [{
+                "id": t.id, "holdingId": t.holding_id, "type": t.tx_type,
+                "date": t.tx_date.isoformat(), "quantity": t.quantity,
+                "unitPrice": t.unit_price, "fee": t.fee or 0.0, "notes": t.notes or "",
+            } for t in txs],
+        })
+    finally:
+        db.close()
+
+
+@app.route("/api/holdings/<int:holding_id>/transactions", methods=["POST"])
+def api_transaction_add(holding_id: int):
+    db = get_session()
+    try:
+        h = db.get(Holding, holding_id)
+        if h is None:
+            return jsonify({"error": "持仓不存在"}), 404
+        data = request.get_json(force=True)
+        try:
+            tx = Transaction(
+                holding_id=holding_id,
+                tx_type=str(data["type"]).upper(),
+                tx_date=dt_date.fromisoformat(data["date"]),
+                quantity=float(data["quantity"]),
+                unit_price=float(data["unitPrice"]),
+                fee=float(data.get("fee") or 0),
+                notes=str(data.get("notes", "")).strip(),
+            )
+            db.add(tx)
+            db.flush()
+            recalculate_holding(db, h)
+            db.commit()
+            return jsonify({"ok": True, "id": tx.id})
+        except (ValueError, KeyError) as exc:
+            return jsonify({"error": str(exc)}), 400
+    finally:
+        db.close()
+
+
+@app.route("/api/portfolio")
+def api_portfolio():
+    rows, total_value, total_cost = _load_portfolio_data()
+    total_pnl = total_value - total_cost
+    total_pnl_pct = (total_pnl / total_cost * 100) if total_cost else 0.0
+    day_pnl = sum(
+        (r["daily_change_pct"] / 100) * r["market_value_cny"]
+        for r in rows if r["daily_change_pct"] is not None
+    )
+    prev_total = total_value - day_pnl
+    day_pnl_pct = (day_pnl / prev_total * 100) if prev_total else 0.0
+    return jsonify({
+        "totalValueCny": round(total_value, 2),
+        "totalCostCny": round(total_cost, 2),
+        "totalPnlCny": round(total_pnl, 2),
+        "totalPnlPct": round(total_pnl_pct, 4),
+        "dayPnl": round(day_pnl, 2),
+        "dayPnlPct": round(day_pnl_pct, 4),
+        "holdingsCount": len(rows),
+    })
+
+
+@app.route("/api/tags")
+def api_tags():
+    rows, total_value, _ = _load_portfolio_data()
+    tag_totals: dict[str, float] = {}
+    for r in rows:
+        for tag in r["tags"]:
+            tag_totals[tag] = tag_totals.get(tag, 0.0) + r["market_value_cny"]
+    return jsonify([{
+        "tag": tag,
+        "valueCny": round(val, 2),
+        "pct": round(val / total_value * 100, 2) if total_value else 0.0,
+    } for tag, val in sorted(tag_totals.items(), key=lambda x: -x[1])])
+
+
+@app.route("/api/exchange-rates")
+def api_exchange_rates():
+    db = get_session()
+    try:
+        rates = {r.from_currency: r.rate for r in db.execute(select(ExchangeRate)).scalars().all()}
+        rates["CNY"] = 1.0
+        return jsonify(rates)
+    finally:
+        db.close()
+
+
+@app.route("/api/transactions")
+def api_transactions():
+    holding_id = request.args.get("holding_id", type=int)
+    db = get_session()
+    try:
+        q = select(Transaction).order_by(Transaction.tx_date.desc(), Transaction.id.desc())
+        if holding_id:
+            q = q.where(Transaction.holding_id == holding_id)
+        txs = db.execute(q).scalars().all()
+        return jsonify([{
+            "id": t.id, "holdingId": t.holding_id, "type": t.tx_type,
+            "date": t.tx_date.isoformat(), "quantity": t.quantity,
+            "unitPrice": t.unit_price, "fee": t.fee or 0.0, "notes": t.notes or "",
+        } for t in txs])
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
