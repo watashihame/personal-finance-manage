@@ -366,15 +366,6 @@ TUNNEL_TOKEN=your_cloudflare_tunnel_token
 
 ---
 
-## 技术栈
-
-- **后端** — Python 3.12, Flask 3.1, SQLAlchemy 2.0, Gunicorn
-- **数据库** — PostgreSQL 16（开发环境可用 SQLite）
-- **行情** — [Tushare Pro](https://tushare.pro)（A 股）, [yfinance](https://github.com/ranaroussi/yfinance)（美股/日股/加密）
-- **前端** — Jinja2 模板, Bootstrap 5.3, Chart.js 4
-- **部署** — Docker, Docker Compose, Nginx, Cloudflare Tunnel
-- **AI 集成** — [MCP](https://modelcontextprotocol.io) `mcp[cli]` SDK（stdio / streamable-http，支持 Claude Desktop、Claude Code、mcporter 等客户端）
-
 ## License
 
 Copyright (c) 2026 watashihame. Released under the [MIT License](LICENSE).
