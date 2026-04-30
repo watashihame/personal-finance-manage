@@ -729,9 +729,9 @@ function LoginPage({ onLogin }) {
           </p>
           <div style={{ display: "grid", gap: 12 }}>
             <Field label="访问 Token">
-              <input className="input" type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="••••••••" autoFocus />
+              <input className="input" type="password" value={token} onChange={e => setToken(e.target.value)} onKeyDown={e => e.key === "Enter" && onLogin(token)} placeholder="••••••••" autoFocus />
             </Field>
-            <button className="btn primary" style={{ height: 36, justifyContent: "center" }} onClick={onLogin}>登录</button>
+            <button className="btn primary" style={{ height: 36, justifyContent: "center" }} onClick={() => onLogin(token)}>登录</button>
           </div>
           <div className="mono" style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--border-subtle)", fontSize: 10, color: "var(--fg-3)", lineHeight: 1.6 }}>
             <div>API · <span style={{ color: "var(--fg-2)" }}>Authorization: Bearer ...</span></div>

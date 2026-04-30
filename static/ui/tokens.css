@@ -72,14 +72,14 @@
   --down-faint: rgba(29, 122, 77, 0.08);
 
   /* Categorical palette (used sparingly for charts) */
-  --cat-1: #3d72c8;
-  --cat-2: #d9722a;
-  --cat-3: #38a055;
-  --cat-4: #9050c0;
-  --cat-5: #c89a10;
-  --cat-6: #179aaa;
-  --cat-7: #d03850;
-  --cat-8: #b04895;
+  --cat-1: #2563eb;
+  --cat-2: #ea6d0a;
+  --cat-3: #16a34a;
+  --cat-4: #7c3aed;
+  --cat-5: #d97706;
+  --cat-6: #0891b2;
+  --cat-7: #dc2626;
+  --cat-8: #db2777;
 
   /* Effects */
   --shadow-1: 0 1px 0 rgba(20, 20, 24, 0.04), 0 1px 2px rgba(20, 20, 24, 0.04);
@@ -122,14 +122,14 @@
   --down-soft: rgba(58, 207, 128, 0.16);
   --down-faint: rgba(58, 207, 128, 0.08);
 
-  --cat-1: #6295e0;
-  --cat-2: #e8924a;
-  --cat-3: #52c07a;
-  --cat-4: #b06ee0;
-  --cat-5: #e0b830;
-  --cat-6: #30bace;
-  --cat-7: #e85870;
-  --cat-8: #d068b5;
+  --cat-1: #60a5fa;
+  --cat-2: #fb923c;
+  --cat-3: #4ade80;
+  --cat-4: #a78bfa;
+  --cat-5: #fbbf24;
+  --cat-6: #22d3ee;
+  --cat-7: #f87171;
+  --cat-8: #f472b6;
 
   --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
   --shadow-2: 0 1px 0 rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.3);
