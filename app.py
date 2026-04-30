@@ -892,6 +892,30 @@ def api_holding_detail(holding_id: int):
         db.close()
 
 
+@app.route("/api/holdings/<int:holding_id>", methods=["PATCH"])
+def api_holding_update(holding_id: int):
+    data = request.get_json(force=True)
+    db = get_session()
+    try:
+        h = db.get(Holding, holding_id)
+        if h is None:
+            return jsonify({"error": "持仓不存在"}), 404
+        if "name" in data:
+            h.name = str(data["name"]).strip()
+        if "tags" in data:
+            raw = data["tags"]
+            if isinstance(raw, list):
+                raw = ",".join(str(t) for t in raw)
+            h.tags = ",".join(t.strip() for t in raw.split(",") if t.strip())
+        if "notes" in data:
+            h.notes = str(data["notes"]).strip()
+        h.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
 @app.route("/api/holdings/<int:holding_id>/transactions", methods=["POST"])
 def api_transaction_add(holding_id: int):
     db = get_session()

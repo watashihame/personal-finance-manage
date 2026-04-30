@@ -135,35 +135,47 @@ function HoldingsPage() {
 
 function HoldingRow({ r }) {
   const [hover, setHover] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [showPrice, setShowPrice] = useState(false);
+  const { navigate } = useRoute();
+
   return (
-    <tr onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
-      <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        <span style={{ fontWeight: 500 }}>{r.name}</span>
-      </td>
-      <td><code style={{ fontSize: 11, color: "var(--fg-2)" }}>{r.symbol}</code></td>
-      <td><span className="chip">{MARKET_LABEL[r.market]}</span></td>
-      <td><span className="chip">{r.type}</span></td>
-      <td>
-        <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
-          {r.tags.slice(0, 3).map(t => <span key={t} className="chip" style={{ background: "var(--bg-1)" }}>{t}</span>)}
-        </div>
-      </td>
-      <td className="num">{fmt.qty(r.quantity)}</td>
-      <td className="num"><span style={{ color: "var(--fg-2)" }}>{fmt.num(r.costPrice, 2)}</span></td>
-      <td className="num">{fmt.num(r.currentPrice, 2)} <span style={{ color: "var(--fg-3)", fontSize: 10 }}>{r.currency}</span></td>
-      <td className="num" style={{ color: r.daily == null ? "var(--fg-3)" : r.daily >= 0 ? "var(--up)" : "var(--down)" }}>{r.daily == null ? "—" : fmt.pct(r.daily)}</td>
-      <td className="num" style={{ fontWeight: 500 }}>{fmt.num(r.valueCny, 2)}</td>
-      <td className="num" style={{ color: r.pnlCny >= 0 ? "var(--up)" : "var(--down)" }}>{fmt.signed(r.pnlCny, 2)}</td>
-      <td className="num" style={{ color: r.pnlPct >= 0 ? "var(--up)" : "var(--down)", fontWeight: 500 }}>{fmt.pct(r.pnlPct)}</td>
-      <td><Sparkline data={r.spark} width={50} height={18} /></td>
-      <td style={{ textAlign: "center" }}>
-        <div style={{ display: "inline-flex", gap: 3, opacity: hover ? 1 : 0.4, transition: "opacity var(--transition-fast)" }}>
-          <button className="btn xs ghost" title="交易记录">交易</button>
-          <button className="btn xs ghost" title="编辑">编辑</button>
-          <button className="btn xs ghost" title="设价">设价</button>
-        </div>
-      </td>
-    </tr>
+    <>
+      <tr onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+        <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <span style={{ fontWeight: 500 }}>{r.name}</span>
+        </td>
+        <td><code style={{ fontSize: 11, color: "var(--fg-2)" }}>{r.symbol}</code></td>
+        <td><span className="chip">{MARKET_LABEL[r.market]}</span></td>
+        <td><span className="chip">{r.type}</span></td>
+        <td>
+          <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+            {r.tags.slice(0, 3).map(t => <span key={t} className="chip" style={{ background: "var(--bg-1)" }}>{t}</span>)}
+          </div>
+        </td>
+        <td className="num">{fmt.qty(r.quantity)}</td>
+        <td className="num"><span style={{ color: "var(--fg-2)" }}>{fmt.num(r.costPrice, 2)}</span></td>
+        <td className="num">{fmt.num(r.currentPrice, 2)} <span style={{ color: "var(--fg-3)", fontSize: 10 }}>{r.currency}</span></td>
+        <td className="num" style={{ color: r.daily == null ? "var(--fg-3)" : r.daily >= 0 ? "var(--up)" : "var(--down)" }}>{r.daily == null ? "—" : fmt.pct(r.daily)}</td>
+        <td className="num" style={{ fontWeight: 500 }}>{fmt.num(r.valueCny, 2)}</td>
+        <td className="num" style={{ color: r.pnlCny >= 0 ? "var(--up)" : "var(--down)" }}>{fmt.signed(r.pnlCny, 2)}</td>
+        <td className="num" style={{ color: r.pnlPct >= 0 ? "var(--up)" : "var(--down)", fontWeight: 500 }}>{fmt.pct(r.pnlPct)}</td>
+        <td><Sparkline data={r.spark} width={50} height={18} /></td>
+        <td style={{ textAlign: "center" }}>
+          <div style={{ display: "inline-flex", gap: 3, opacity: hover ? 1 : 0.4, transition: "opacity var(--transition-fast)" }}>
+            <button className="btn xs ghost" title="交易记录"
+              onClick={() => navigate("transactions", { holdingId: r.id })}>交易</button>
+            <button className="btn xs ghost" title="编辑"
+              onClick={() => setShowEdit(true)}>编辑</button>
+            <button className="btn xs ghost" title="设价"
+              onClick={() => setShowPrice(true)}
+              style={{ color: r.isManual ? "var(--up)" : undefined }}>设价</button>
+          </div>
+        </td>
+      </tr>
+      {showEdit && <EditHoldingModal r={r} onClose={() => setShowEdit(false)} />}
+      {showPrice && <SetPriceModal r={r} onClose={() => setShowPrice(false)} />}
+    </>
   );
 }
 
@@ -765,6 +777,132 @@ function Modal({ title, children, onClose, width = 480 }) {
         <div style={{ padding: 18 }}>{children}</div>
       </div>
     </div>
+  );
+}
+
+// =============================================================
+// Edit holding modal
+// =============================================================
+function EditHoldingModal({ r, onClose }) {
+  const [name, setName] = useState(r.name);
+  const [tags, setTags] = useState((r.tags || []).join(", "));
+  const [notes, setNotes] = useState(r.notes || "");
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/holdings/${r.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, tags, notes }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "保存失败");
+      window.dispatchEvent(new Event("portfolio-refreshed"));
+      onClose();
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={`编辑持仓 · ${r.symbol}`} onClose={onClose} width={440}>
+      <div style={{ display: "grid", gap: 14 }}>
+        <Field label="名称">
+          <input className="input" value={name} onChange={e => setName(e.target.value)} />
+        </Field>
+        <Field label="标签" hint="用逗号分隔">
+          <input className="input" value={tags} onChange={e => setTags(e.target.value)} placeholder="科技, 长期持有" />
+        </Field>
+        <Field label="备注">
+          <textarea className="input" rows={3} style={{ height: "auto", padding: 10, resize: "vertical" }}
+            value={notes} onChange={e => setNotes(e.target.value)} />
+        </Field>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+          <button className="btn sm" onClick={onClose}>取消</button>
+          <button className="btn primary sm" onClick={handleSave} disabled={saving}>
+            {saving ? "保存中…" : "保存"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// =============================================================
+// Set price override modal
+// =============================================================
+function SetPriceModal({ r, onClose }) {
+  const [price, setPrice] = useState(r.currentPrice != null ? String(r.currentPrice) : "");
+  const [saving, setSaving] = useState(false);
+
+  const handleSet = async () => {
+    if (!price || isNaN(+price) || +price <= 0) { alert("请输入有效价格"); return; }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/override-price", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: r.symbol, price: +price, currency: r.currency }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "设价失败");
+      window.dispatchEvent(new Event("portfolio-refreshed"));
+      onClose();
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClear = async () => {
+    setSaving(true);
+    try {
+      await fetch("/api/clear-override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: r.symbol }),
+      });
+      window.dispatchEvent(new Event("portfolio-refreshed"));
+      onClose();
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={`手动设价 · ${r.symbol}`} onClose={onClose} width={380}>
+      <div style={{ display: "grid", gap: 14 }}>
+        {r.isManual && (
+          <div style={{ fontSize: "var(--fs-xs)", color: "var(--up)", padding: "6px 10px",
+            background: "var(--up-faint)", borderRadius: "var(--r-2)" }}>
+            当前为手动价格
+          </div>
+        )}
+        <Field label={`价格 (${r.currency})`}>
+          <input className="input" type="number" step="0.0001" value={price}
+            onChange={e => setPrice(e.target.value)} autoFocus />
+        </Field>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
+          {r.isManual ? (
+            <button className="btn sm" style={{ color: "var(--down)" }}
+              onClick={handleClear} disabled={saving}>清除手动设价</button>
+          ) : <span />}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn sm" onClick={onClose}>取消</button>
+            <button className="btn primary sm" onClick={handleSet} disabled={saving}>
+              {saving ? "设置中…" : "确认设价"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
