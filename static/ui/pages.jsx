@@ -415,6 +415,35 @@ function TransactionsPage({ params }) {
   const [txLoading, setTxLoading] = useState(false);
   const h = HOLDINGS.find(x => x.id === holdingId);
   const [showAdd, setShowAdd] = useState(false);
+  const [editingTx, setEditingTx] = useState(null);
+  const [busyTxId, setBusyTxId] = useState(null);
+
+  const reload = () => {
+    if (!holdingId) return;
+    fetch(`/api/transactions?holding_id=${holdingId}`)
+      .then(r => r.json())
+      .then(setTransactions)
+      .catch(() => {});
+  };
+
+  const handleDelete = async (t) => {
+    const pairedNote = t.counterpartyId
+      ? `\n注意：此交易与 ${t.counterpartySymbol || "对方持仓"} 配对，删除将同步移除对方记录。`
+      : "";
+    if (!confirm(`确定删除这笔 ${TX_TYPE_ZH[t.type] || t.type} ${t.quantity} 的交易吗？此操作不可撤销。${pairedNote}`)) return;
+    setBusyTxId(t.id);
+    try {
+      const r = await fetch(`/api/transactions/${t.id}`, { method: "DELETE" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "删除失败");
+      reload();
+      window.dispatchEvent(new Event("portfolio-refreshed"));
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setBusyTxId(null);
+    }
+  };
 
   useEffect(() => {
     if (!holdingId) return;
@@ -494,8 +523,11 @@ function TransactionsPage({ params }) {
                   <td className="num" style={{ color: t.fee > 0 ? "var(--fg-1)" : "var(--fg-3)" }}>{t.fee > 0 ? fmt.num(t.fee, 2) : "—"}</td>
                   <td style={{ fontSize: 11 }}>{t.counterpartySymbol || "—"}</td>
                   <td style={{ color: "var(--fg-2)" }}>{t.notes || "—"}</td>
-                  <td style={{ textAlign: "center" }}>
-                    <button className="btn xs ghost" style={{ color: "var(--down)" }}>删除</button>
+                  <td style={{ textAlign: "center", display: "flex", gap: 4, justifyContent: "center" }}>
+                    <button className="btn xs ghost" onClick={() => { setEditingTx(t); }}>编辑</button>
+                    <button className="btn xs ghost" style={{ color: "var(--down)" }}
+                      disabled={busyTxId === t.id}
+                      onClick={() => handleDelete(t)}>{busyTxId === t.id ? "…" : "删除"}</button>
                   </td>
                 </tr>
               );
@@ -510,10 +542,15 @@ function TransactionsPage({ params }) {
           holdingId={holdingId}
           symbol={h.symbol}
           currency={h.currency}
-          onSaved={() => {
-            fetch(`/api/transactions?holding_id=${holdingId}`)
-              .then(r => r.json()).then(setTransactions);
-          }}
+          onSaved={() => { reload(); window.dispatchEvent(new Event("portfolio-refreshed")); }}
+        />
+      )}
+      {editingTx && h && (
+        <EditTransactionModal
+          tx={editingTx}
+          currency={h.currency}
+          onClose={() => setEditingTx(null)}
+          onSaved={() => { reload(); window.dispatchEvent(new Event("portfolio-refreshed")); }}
         />
       )}
     </PageWrap>
@@ -611,6 +648,74 @@ function AddTransactionModal({ onClose, holdingId, symbol, currency, onSaved }) 
           </Field>
         )}
         <Field label="备注 (可选)"><input className="input" placeholder="" value={notes} onChange={e => setNotes(e.target.value)} /></Field>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+          <button className="btn sm" onClick={onClose}>取消</button>
+          <button className="btn primary sm" onClick={handleSave} disabled={saving}>{saving ? "保存中…" : "保存"}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// =============================================================
+// Edit transaction modal — re-uses many patterns from AddTransactionModal
+// =============================================================
+function EditTransactionModal({ tx, currency, onClose, onSaved }) {
+  const [txType, setTxType] = useState(tx.type);
+  const [date, setDate] = useState(tx.date);
+  const [quantity, setQuantity] = useState(String(tx.quantity));
+  const [unitPrice, setUnitPrice] = useState(String(tx.unitPrice));
+  const [fee, setFee] = useState(String(tx.fee || 0));
+  const [notes, setNotes] = useState(tx.notes || "");
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!quantity || !unitPrice) { alert("请填写数量和价格"); return; }
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/transactions/${tx.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: txType, date, quantity: +quantity,
+          unitPrice: +unitPrice, fee: +(fee || 0), notes,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "保存失败");
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="编辑交易" onClose={onClose} width={440}>
+      <div style={{ display: "grid", gap: 14 }}>
+        <Field label="类型">
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["BUY","买入"],["SELL","卖出"],["TRANSFER_IN","转入"],["TRANSFER_OUT","转出"]].map(([val, label]) => (
+              <button key={val} className="btn sm"
+                style={{ flex: 1, background: txType === val ? (val==="BUY"||val==="TRANSFER_IN"?"var(--down-faint)":"var(--up-faint)") : undefined,
+                         color: txType === val ? (val==="BUY"||val==="TRANSFER_IN"?"var(--down)":"var(--up)") : undefined,
+                         borderColor: txType === val ? "transparent" : undefined }}
+                onClick={() => setTxType(val)}>{label}</button>
+            ))}
+          </div>
+        </Field>
+        <Field label="日期"><input className="input" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+        <Field label="数量"><input className="input" type="number" placeholder="0" value={quantity} onChange={e => setQuantity(e.target.value)} /></Field>
+        <Field label={`价格 (${currency})`}><input className="input" type="number" step="0.01" placeholder="0.00" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></Field>
+        <Field label={`手续费 (${currency})`}><input className="input" type="number" step="0.01" placeholder="0.00" value={fee} onChange={e => setFee(e.target.value)} /></Field>
+        <Field label="备注 (可选)"><input className="input" placeholder="" value={notes} onChange={e => setNotes(e.target.value)} /></Field>
+        {tx.counterpartyId ? (
+          <div style={{ fontSize: 11, color: "var(--fg-3)", background: "var(--bg-2)", padding: 8, borderRadius: "var(--r-2)" }}>
+            此交易已配对到 {tx.counterpartySymbol || "对方持仓"}。编辑仅更新本侧，对方记录保持不变。
+          </div>
+        ) : null}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
           <button className="btn sm" onClick={onClose}>取消</button>
           <button className="btn primary sm" onClick={handleSave} disabled={saving}>{saving ? "保存中…" : "保存"}</button>
