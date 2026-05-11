@@ -32,12 +32,13 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import select
 
-from models import init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate, recalculate_holding
+from models import init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate, PriceHistory, PortfolioValueHistory, recalculate_holding
 from price_fetcher import (
     refresh_all_prices,
     set_manual_price,
     clear_manual_override,
     fetch_exchange_rates,
+    backfill_value_history,
 )
 
 logging.basicConfig(level=logging.WARNING)
@@ -231,6 +232,201 @@ def search_holdings(q: str = "") -> str:
 
 
 @mcp.tool()
+def get_holding_detail(holding_id: int) -> str:
+    """
+    Get full detail for one holding: current price/value/P&L, tags, plus all transactions
+    and the last 60 days of price history (sparkline). Use search_holdings first to find the ID.
+    """
+    try:
+        rows, _, _ = _load_portfolio_data()
+        row = next((r for r in rows if r["id"] == holding_id), None)
+        if row is None:
+            return json.dumps({"ok": False, "error": f"Holding {holding_id} not found"}, ensure_ascii=False)
+
+        session = get_session()
+        try:
+            txs = session.execute(
+                select(Transaction)
+                .where(Transaction.holding_id == holding_id)
+                .order_by(Transaction.tx_date.desc(), Transaction.id.desc())
+            ).scalars().all()
+
+            from datetime import date as dt_date
+            cutoff = dt_date.today() - timedelta(days=60)
+            spark = session.execute(
+                select(PriceHistory.price)
+                .where(PriceHistory.symbol == row["symbol"], PriceHistory.date >= cutoff)
+                .order_by(PriceHistory.date)
+            ).scalars().all()
+
+            return json.dumps({
+                **row,
+                "sparkline_60d": list(spark),
+                "transactions": [
+                    {
+                        "id": t.id,
+                        "tx_type": t.tx_type,
+                        "tx_date": t.tx_date.isoformat(),
+                        "quantity": t.quantity,
+                        "unit_price": t.unit_price,
+                        "fee": t.fee or 0.0,
+                        "notes": t.notes or "",
+                        "counterparty_id": t.counterparty_id,
+                    }
+                    for t in txs
+                ],
+            }, ensure_ascii=False, indent=2)
+        finally:
+            session.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_tags() -> str:
+    """
+    Get all tags currently in use, with the total CNY market value and percentage of
+    portfolio they represent, sorted by value descending.
+    """
+    try:
+        rows, total_value, _ = _load_portfolio_data()
+        tag_totals: dict[str, float] = {}
+        for r in rows:
+            for tag in r["tags"]:
+                tag_totals[tag] = tag_totals.get(tag, 0.0) + r["market_value_cny"]
+        result = [
+            {
+                "tag": tag,
+                "value_cny": round(val, 2),
+                "pct": round(val / total_value * 100, 2) if total_value else 0.0,
+            }
+            for tag, val in sorted(tag_totals.items(), key=lambda x: -x[1])
+        ]
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_price_history(symbol: str) -> str:
+    """
+    Get the full daily price history for a symbol from the price_history table
+    (populated by refresh_prices runs). Returns dates and prices in chronological order.
+    """
+    try:
+        symbol = symbol.strip().upper()
+        if not symbol:
+            return json.dumps({"ok": False, "error": "symbol is required"}, ensure_ascii=False)
+        session = get_session()
+        try:
+            rows = session.execute(
+                select(PriceHistory)
+                .where(PriceHistory.symbol == symbol)
+                .order_by(PriceHistory.date)
+            ).scalars().all()
+            return json.dumps({
+                "symbol": symbol,
+                "currency": rows[-1].currency if rows else "",
+                "dates": [r.date.isoformat() for r in rows],
+                "prices": [r.price for r in rows],
+            }, ensure_ascii=False, indent=2)
+        finally:
+            session.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_portfolio_value_history() -> str:
+    """
+    Get the daily total portfolio value (CNY) over time from snapshots in
+    portfolio_value_history. Use backfill_value_history first if the series is empty.
+    """
+    try:
+        session = get_session()
+        try:
+            rows = session.execute(
+                select(PortfolioValueHistory)
+                .where(PortfolioValueHistory.scope == "total")
+                .order_by(PortfolioValueHistory.date)
+            ).scalars().all()
+            return json.dumps({
+                "dates": [r.date.isoformat() for r in rows],
+                "values_cny": [r.value_cny for r in rows],
+            }, ensure_ascii=False, indent=2)
+        finally:
+            session.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_holding_value_history(symbol: str) -> str:
+    """
+    Get the daily market value (CNY) over time for one holding, from snapshots in
+    portfolio_value_history (scope_type='holding').
+    """
+    try:
+        symbol = symbol.strip().upper()
+        if not symbol:
+            return json.dumps({"ok": False, "error": "symbol is required"}, ensure_ascii=False)
+        session = get_session()
+        try:
+            rows = session.execute(
+                select(PortfolioValueHistory)
+                .where(
+                    PortfolioValueHistory.scope == symbol,
+                    PortfolioValueHistory.scope_type == "holding",
+                )
+                .order_by(PortfolioValueHistory.date)
+            ).scalars().all()
+            holding = session.execute(
+                select(Holding).where(Holding.symbol == symbol)
+            ).scalar_one_or_none()
+            return json.dumps({
+                "symbol": symbol,
+                "name": holding.name if holding else symbol,
+                "dates": [r.date.isoformat() for r in rows],
+                "values_cny": [r.value_cny for r in rows],
+            }, ensure_ascii=False, indent=2)
+        finally:
+            session.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_tag_value_history(tag: str) -> str:
+    """
+    Get the daily aggregated market value (CNY) over time for all holdings carrying a
+    given tag, from snapshots in portfolio_value_history (scope_type='tag').
+    """
+    try:
+        tag = tag.strip()
+        if not tag:
+            return json.dumps({"ok": False, "error": "tag is required"}, ensure_ascii=False)
+        session = get_session()
+        try:
+            rows = session.execute(
+                select(PortfolioValueHistory)
+                .where(
+                    PortfolioValueHistory.scope == tag,
+                    PortfolioValueHistory.scope_type == "tag",
+                )
+                .order_by(PortfolioValueHistory.date)
+            ).scalars().all()
+            return json.dumps({
+                "tag": tag,
+                "dates": [r.date.isoformat() for r in rows],
+                "values_cny": [r.value_cny for r in rows],
+            }, ensure_ascii=False, indent=2)
+        finally:
+            session.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
 def get_exchange_rates() -> str:
     """
     Get current CNY exchange rates for all tracked currencies (USD, JPY, HKD, EUR, GBP).
@@ -384,6 +580,54 @@ def update_holding_tags(holding_id: int, tags: list[str]) -> str:
             h.tags = ",".join(cleaned)
             session.commit()
             return json.dumps({"ok": True, "id": h.id, "symbol": h.symbol, "tags": cleaned}, ensure_ascii=False)
+        finally:
+            session.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def update_holding(
+    holding_id: int,
+    name: str | None = None,
+    notes: str | None = None,
+    tags: list[str] | None = None,
+) -> str:
+    """
+    Update a holding's display fields. Pass only the fields you want to change; omit
+    others (or pass None). Use update_holding_quantity to change quantity, and
+    add_transaction to record buys/sells (this tool does NOT recalculate cost_price).
+    """
+    try:
+        if name is None and notes is None and tags is None:
+            return json.dumps({"ok": False, "error": "Provide at least one of name/notes/tags"}, ensure_ascii=False)
+        session = get_session()
+        try:
+            h = session.get(Holding, holding_id)
+            if not h:
+                return json.dumps({"ok": False, "error": f"Holding {holding_id} not found"}, ensure_ascii=False)
+
+            if name is not None:
+                name = name.strip()
+                if not name:
+                    return json.dumps({"ok": False, "error": "name cannot be empty"}, ensure_ascii=False)
+                h.name = name
+            if notes is not None:
+                h.notes = notes.strip()
+            if tags is not None:
+                cleaned = [t.strip() for t in tags if t.strip()]
+                h.tags = ",".join(cleaned)
+
+            h.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            return json.dumps({
+                "ok": True,
+                "id": h.id,
+                "symbol": h.symbol,
+                "name": h.name,
+                "tags": [t.strip() for t in (h.tags or "").split(",") if t.strip()],
+                "notes": h.notes or "",
+            }, ensure_ascii=False)
         finally:
             session.close()
     except Exception as e:
@@ -599,6 +843,137 @@ def list_transactions(holding_id: int) -> str:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
 
+def _find_paired_transaction(session, tx: Transaction) -> Transaction | None:
+    """Locate the paired counterparty transaction created alongside `tx`."""
+    if not tx.counterparty_id:
+        return None
+    opposite = {
+        "BUY": "SELL", "SELL": "BUY",
+        "TRANSFER_IN": "TRANSFER_OUT", "TRANSFER_OUT": "TRANSFER_IN",
+    }.get(tx.tx_type)
+    if not opposite:
+        return None
+    return session.execute(
+        select(Transaction)
+        .where(
+            Transaction.holding_id == tx.counterparty_id,
+            Transaction.counterparty_id == tx.holding_id,
+            Transaction.tx_date == tx.tx_date,
+            Transaction.tx_type == opposite,
+            Transaction.id != tx.id,
+        )
+        .order_by(Transaction.id.desc())
+    ).scalars().first()
+
+
+@mcp.tool()
+def update_transaction(
+    tx_id: int,
+    tx_type: Literal["BUY", "SELL", "TRANSFER_IN", "TRANSFER_OUT"] | None = None,
+    tx_date: str | None = None,
+    quantity: float | None = None,
+    unit_price: float | None = None,
+    fee: float | None = None,
+    notes: str | None = None,
+) -> str:
+    """
+    Update fields on an existing transaction and recompute the owning holding's
+    quantity/cost_price. Pass only fields you want to change. Note: paired
+    counterparty transactions are NOT automatically modified — update them separately.
+    """
+    try:
+        if all(v is None for v in (tx_type, tx_date, quantity, unit_price, fee, notes)):
+            return json.dumps({"ok": False, "error": "Provide at least one field to update"}, ensure_ascii=False)
+
+        session = get_session()
+        try:
+            tx = session.get(Transaction, tx_id)
+            if not tx:
+                return json.dumps({"ok": False, "error": f"Transaction {tx_id} not found"}, ensure_ascii=False)
+
+            if tx_type is not None:
+                tx.tx_type = tx_type
+            if tx_date is not None:
+                from datetime import date as dt_date
+                try:
+                    tx.tx_date = dt_date.fromisoformat(tx_date)
+                except ValueError:
+                    return json.dumps({"ok": False, "error": f"Invalid tx_date '{tx_date}', use YYYY-MM-DD"}, ensure_ascii=False)
+            if quantity is not None:
+                if quantity <= 0:
+                    return json.dumps({"ok": False, "error": "quantity must be > 0"}, ensure_ascii=False)
+                tx.quantity = quantity
+            if unit_price is not None:
+                if unit_price <= 0:
+                    return json.dumps({"ok": False, "error": "unit_price must be > 0"}, ensure_ascii=False)
+                tx.unit_price = unit_price
+            if fee is not None:
+                tx.fee = fee
+            if notes is not None:
+                tx.notes = notes.strip()
+
+            session.flush()
+            h = session.get(Holding, tx.holding_id)
+            if h is not None:
+                recalculate_holding(session, h)
+            session.commit()
+
+            return json.dumps({
+                "ok": True,
+                "id": tx.id,
+                "holding_id": tx.holding_id,
+                "has_paired": tx.counterparty_id is not None,
+                "new_quantity": round(h.quantity, 6) if h else None,
+                "new_cost_price": round(h.cost_price, 6) if h else None,
+            }, ensure_ascii=False)
+        finally:
+            session.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def delete_transaction(tx_id: int, confirm: bool) -> str:
+    """
+    Permanently delete a transaction and recompute the owning holding. If the
+    transaction has a paired counterparty transaction (from add_transaction with
+    counterparty_holding_id), that paired transaction is also deleted. Pass
+    confirm=True to confirm; this cannot be undone.
+    """
+    try:
+        if not confirm:
+            return json.dumps({"ok": False, "error": "Pass confirm=True to confirm deletion"}, ensure_ascii=False)
+
+        session = get_session()
+        try:
+            tx = session.get(Transaction, tx_id)
+            if not tx:
+                return json.dumps({"ok": False, "error": f"Transaction {tx_id} not found"}, ensure_ascii=False)
+
+            affected_holdings = [session.get(Holding, tx.holding_id)]
+            paired = _find_paired_transaction(session, tx)
+            paired_id = paired.id if paired else None
+            if paired is not None:
+                affected_holdings.append(session.get(Holding, paired.holding_id))
+                session.delete(paired)
+            session.delete(tx)
+            session.flush()
+
+            for h in affected_holdings:
+                if h is not None:
+                    recalculate_holding(session, h)
+            session.commit()
+            return json.dumps({
+                "ok": True,
+                "deleted_id": tx_id,
+                "paired_deleted_id": paired_id,
+            }, ensure_ascii=False)
+        finally:
+            session.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
 # ---------------------------------------------------------------------------
 # Tools — Price
 # ---------------------------------------------------------------------------
@@ -660,6 +1035,25 @@ def clear_price_override(symbol: str) -> str:
 
         clear_manual_override(symbol)
         return json.dumps({"ok": True, "symbol": symbol}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def backfill_history() -> str:
+    """
+    Replay all dates in price_history and write portfolio_value_history snapshots
+    (per-holding, per-tag, and total) for each date, using transaction-derived
+    quantities at that point in time. Run after importing historical prices, or to
+    repair the value-history series. Idempotent (upserts).
+    """
+    try:
+        session = get_session()
+        try:
+            days = backfill_value_history(session)
+            return json.dumps({"ok": True, "days_processed": days}, ensure_ascii=False)
+        finally:
+            session.close()
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 

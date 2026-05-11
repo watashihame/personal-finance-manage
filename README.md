@@ -12,7 +12,7 @@
 - **交易记录** — 记录每笔买卖交易，自动重算持仓成本和数量
 - **趋势分析** — 资产组合历史净值曲线、各持仓/标签历史市值走势图
 - **可视化** — 资产分配饼图 + 持仓市值柱状图
-- **Docker 部署** — 开箱即用的 Docker Compose 配置（Flask + Nginx + PostgreSQL + Cloudflare Tunnel）
+- **Docker 部署** — Docker Compose 配置（Flask + MCP + PostgreSQL），通过外部 `edge_net` 网络接入用户自管的反向代理
 
 ## 快速开始
 
@@ -51,15 +51,23 @@ MCP_TOKEN=your_mcp_token
 TUNNEL_TOKEN=your_cloudflare_tunnel_token
 ```
 
-**3. 启动**
+**3. 创建外部网络（首次部署）**
+
+`docker-compose.yml` 声明了 `edge_net` 为 external network，用于让反向代理（自建 nginx、Cloudflare Tunnel 等）通过 Docker DNS 别名访问 `personal-finance-web` 和 `personal-finance-mcp`：
+
+```bash
+docker network create edge_net
+```
+
+**4. 启动**
 
 ```bash
 docker compose up -d --build
 ```
 
-**4. 访问**
+**5. 访问**
 
-打开浏览器访问 `http://localhost`（或服务器 IP）。
+服务默认仅监听 Docker 内部网络（容器内 `web:5000`、`mcp:8000`），通过你自己的反向代理对外暴露。本地调试可临时在 `docker-compose.yml` 给 web/mcp 加 `ports` 映射。
 
 ---
 
@@ -69,15 +77,11 @@ docker compose up -d --build
 pip install -r requirements.txt
 
 # 使用 SQLite，无需 PostgreSQL
+export TUSHARE_TOKEN=your_tushare_token_here   # A 股行情需要
 python app.py
 ```
 
-访问 `http://localhost:5000`。A 股行情需在 `config.ini` 中配置 Tushare Token：
-
-```ini
-[tushare]
-token = your_tushare_token_here
-```
+访问 `http://localhost:5000`。
 
 ## 标的代码格式
 
@@ -92,23 +96,21 @@ token = your_tushare_token_here
 ## 架构
 
 ```
-互联网
-  └─ Cloudflare Tunnel（HTTPS）
-       └─ Nginx :80
-            ├─ /static/   →  直接返回静态文件
-            ├─ /mcp       →  MCP Server（Bearer Token 鉴权）
-            └─ /          →  反向代理到 Gunicorn
-                                └─ Flask 应用
-                                     └─ PostgreSQL
+外部反向代理（用户自管，e.g. nginx + Cloudflare Tunnel）
+  │
+  └─ edge_net (Docker external network)
+       ├─ personal-finance-web :5000  →  Flask + Gunicorn  ┐
+       └─ personal-finance-mcp :8000  →  MCP HTTP server   ├─→  PostgreSQL (db:5432)
+                                                            ┘
 ```
 
 | 容器 | 镜像 | 说明 |
 |------|------|------|
-| `nginx` | nginx:1.27-alpine | 反向代理 + 静态文件 |
-| `web` | 本地构建 | Flask + Gunicorn，2 workers |
-| `db` | postgres:16-alpine | 数据持久化 |
-| `mcp` | 本地构建 | MCP streamable-http 服务 |
-| `cloudflared` | cloudflare/cloudflared | Cloudflare Tunnel，自动 TLS |
+| `web` | 本地构建 | Flask + Gunicorn，2 workers，端口 5000 |
+| `mcp` | 本地构建 | MCP streamable-http 服务，端口 8000，Bearer Token 鉴权 |
+| `db` | postgres:16-alpine | 数据持久化，仅监听 127.0.0.1:5432 |
+
+`web` 和 `mcp` 都同时接入 `default` 网络（互相 + db 通信）和 `edge_net` 外部网络（暴露给反向代理）。
 
 ## 环境变量
 
@@ -119,10 +121,9 @@ token = your_tushare_token_here
 | `TUSHARE_TOKEN` | 否 | — | A 股行情 Token，不填则 A 股无法自动刷新 |
 | `ACCESS_TOKEN` | 否 | — | Web 全站鉴权 Token，设置后强制登录，留空则关闭鉴权 |
 | `MCP_TOKEN` | 否 | — | MCP HTTP 端点 Bearer Token，设置后强制鉴权，留空则关闭 |
-| `TUNNEL_TOKEN` | 否 | — | Cloudflare Tunnel Token，不填则不启动 cloudflared |
 | `POSTGRES_DB` | 否 | `portfolio` | 数据库名 |
 | `POSTGRES_USER` | 否 | `portfolio` | 数据库用户名 |
-| `NGINX_PORT` | 否 | `80` | Nginx 监听端口 |
+| `MCP_HOST` | 否 | `0.0.0.0` | MCP 服务绑定地址 |
 
 ## 访问鉴权
 
@@ -150,15 +151,15 @@ docker compose up -d --build web
 Authorization: Bearer your_strong_token_here
 ```
 
-示例：
+示例（假设你的反向代理把外部域名 `your-domain` 转发到 `personal-finance-web:5000` / `personal-finance-mcp:8000`）：
 
 ```bash
 # REST API
-curl -X POST http://localhost/api/refresh-prices \
+curl -X POST https://your-domain/api/refresh-prices \
   -H "Authorization: Bearer your_strong_token_here"
 
 # MCP 端点（需同时声明两种 Accept）
-curl -s https://<你的域名>/mcp \
+curl -s https://your-domain/mcp \
   -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer your_mcp_token" \
   -H "Content-Type: application/json" \
@@ -195,12 +196,11 @@ docker compose down
 从旧版本升级时，如缺少以下字段，需手动执行对应 SQL：
 
 ```sql
--- 新增标签字段（旧版升级）
+-- 标签字段（旧版升级）
 ALTER TABLE holdings ADD COLUMN tags VARCHAR(200) DEFAULT '';
-
--- 新增交易记录表（本次更新）
--- 已通过 init_db() 自动创建，无需手动操作
 ```
+
+交易记录表（`transactions`）和历史净值表（`portfolio_value_history`、`price_history`）由 `init_db()` 自动创建。
 
 历史净值快照通过 `/api/backfill-value-history` 接口或每日价格刷新时自动写入。
 
@@ -211,20 +211,25 @@ ALTER TABLE holdings ADD COLUMN tags VARCHAR(200) DEFAULT '';
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/api/holdings/search` | GET | 按名称/代码模糊查询持仓 |
-| `/api/holdings` | POST | 新增持仓 |
-| `/api/holdings/<id>/quantity` | PATCH | 修改持仓份数（支持直接设置或增量） |
+| `/api/holdings` | GET / POST | 列出全部持仓 / 新增持仓 |
+| `/api/holdings/<id>` | GET / PATCH | 查看持仓详情 / 修改 name/notes/tags |
+| `/api/holdings/<id>/quantity` | PATCH | 修改持仓份数（绝对值或增量） |
 | `/api/holdings/<id>/tags` | PATCH | 修改持仓标签 |
-| `/api/refresh-prices` | POST | 刷新所有持仓行情 |
+| `/api/holdings/<id>/transactions` | POST | 新增交易记录（可联动对方持仓） |
+| `/api/transactions` | GET | 列出交易（可按 `?holding_id=` 过滤） |
+| `/api/transactions/<id>` | PATCH / DELETE | 修改 / 删除交易（联动重算持仓） |
+| `/api/portfolio` | GET | 组合汇总（总市值/盈亏/今日变化） |
+| `/api/portfolio-data` | GET | 饼图数据 |
+| `/api/tags` | GET | 标签维度市值汇总 |
+| `/api/exchange-rates` | GET | 当前缓存汇率 |
+| `/api/refresh-prices` | POST | 刷新所有持仓行情 + 汇率 |
 | `/api/override-price` | POST | 手动设置价格 |
 | `/api/clear-override` | POST | 清除手动价格 |
-| `/api/portfolio-data` | GET | 获取图表数据（JSON） |
 | `/api/price-history/<symbol>` | GET | 获取某标的历史价格 |
 | `/api/portfolio-value-history` | GET | 获取组合历史净值（每日快照） |
 | `/api/holding-value-history/<symbol>` | GET | 获取某持仓历史市值 |
 | `/api/tag-value-history/<tag>` | GET | 获取某标签下历史市值 |
 | `/api/backfill-value-history` | POST | 补全历史净值快照 |
-| `/holdings/<id>/transactions` | GET | 查看某持仓的交易记录 |
-| `/holdings/<id>/transactions/add` | POST | 新增交易记录 |
 
 ## MCP Server（AI 集成）
 
@@ -278,21 +283,22 @@ TRANSPORT=streamable-http MCP_HOST=0.0.0.0 MCP_PORT=8000 \
   python mcp_server.py
 ```
 
-MCP 端点地址（直连，不经 Nginx）：`http://<服务器IP>:8000/mcp`
+MCP 端点地址（容器内/外部反向代理后端）：`http://personal-finance-mcp:8000/mcp` 或 `http://<服务器IP>:8000/mcp`
 
 **Docker Compose 一键启动**（推荐）：
 
 ```bash
+docker network create edge_net   # 首次部署
 docker compose up -d
 ```
 
-所有流量统一走 **80 端口**（或通过 Cloudflare Tunnel 走 HTTPS），由 Nginx 路由：
+`web`（端口 5000）和 `mcp`（端口 8000）会自动加入 `edge_net` 外部网络，方便用户自管的反向代理（自建 nginx、Cloudflare Tunnel 等）通过 Docker DNS 别名转发。常见路由约定：
 
-| 路径 | 说明 |
-|------|------|
-| `/` | Web 界面（Flask） |
-| `/api/...` | REST API |
-| `/mcp` | MCP streamable-http 端点 |
+| 路径 | 反向代理转发目标 |
+|------|----------------|
+| `/` | `http://personal-finance-web:5000` |
+| `/api/...` | `http://personal-finance-web:5000` |
+| `/mcp` | `http://personal-finance-mcp:8000` |
 
 #### MCP HTTP 鉴权
 
@@ -326,32 +332,56 @@ Accept: application/json, text/event-stream
 
 在 shell 中 `export MCP_TOKEN=your_token`，mcporter 会自动替换 `${MCP_TOKEN}`。
 
-#### Cloudflare Tunnel（HTTPS 公网访问）
+#### 通过 Cloudflare Tunnel 暴露（参考方案）
 
-在 `.env` 中填入从 Cloudflare Zero Trust 控制台获取的 Tunnel Token：
+在 `edge_net` 上另起 cloudflared 容器，连接同一外部网络后即可在 Cloudflare 控制台把 Public Hostname 指向 `http://personal-finance-mcp:8000` 或 `http://personal-finance-web:5000`。示例 compose（独立于本仓库）：
 
-```ini
-TUNNEL_TOKEN=your_cloudflare_tunnel_token
+```yaml
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: your_cloudflare_tunnel_token
+    networks: [edge_net]
+networks:
+  edge_net:
+    external: true
 ```
-
-在 Cloudflare 控制台 → Tunnels → Public Hostnames 添加路由，服务 URL 填 `http://nginx:80`，即可通过 `https://<你的域名>/mcp` 安全访问 MCP 端点。
 
 ### 可用 Tools
 
+**读工具**
+
 | Tool | 说明 |
 |------|------|
-| `get_portfolio_summary` | 获取完整持仓汇总（总市值/成本/盈亏 + 各持仓明细） |
+| `get_portfolio_summary` | 完整持仓汇总（总市值/成本/盈亏 + 各持仓明细） |
+| `get_holding_detail` | 单个持仓详情：当前价/盈亏/标签 + 全部交易 + 近 60 天价格 |
 | `search_holdings` | 按名称或代码搜索持仓，空字符串返回全部 |
-| `get_exchange_rates` | 查看当前缓存汇率（USD/JPY/HKD 等对 CNY） |
-| `add_holding` | 新增持仓 |
-| `update_holding_quantity` | 更新持仓数量（支持绝对值或增量） |
-| `update_holding_tags` | 更新持仓标签 |
-| `delete_holding` | 删除持仓（需传 `confirm=true`） |
-| `add_transaction` | 记录一笔买卖交易，自动更新持仓成本和数量 |
 | `list_transactions` | 查看某持仓的全部交易记录 |
-| `refresh_prices` | 从 Tushare/yfinance 刷新全部行情和汇率 |
+| `get_tags` | 各标签的市值合计与占比 |
+| `get_exchange_rates` | 当前缓存汇率（USD/JPY/HKD 等对 CNY） |
+| `get_price_history` | 某标的的全部历史价格 |
+| `get_portfolio_value_history` | 组合每日净值时间序列 |
+| `get_holding_value_history` | 单个持仓的每日市值时间序列 |
+| `get_tag_value_history` | 单个标签下的每日市值时间序列 |
+
+**写工具**
+
+| Tool | 说明 |
+|------|------|
+| `add_holding` | 新增持仓 |
+| `update_holding` | 修改持仓的 name/notes/tags |
+| `update_holding_quantity` | 更新持仓数量（绝对值或增量） |
+| `update_holding_tags` | 替换持仓标签列表 |
+| `delete_holding` | 删除持仓（需传 `confirm=true`） |
+| `add_transaction` | 记录买卖/转入转出，自动重算持仓成本和数量，可联动对方持仓 |
+| `update_transaction` | 修改交易字段，重算所属持仓 |
+| `delete_transaction` | 删除交易（联动删除配对交易，需传 `confirm=true`） |
+| `refresh_prices` | 从 Tushare/eastmoney/yfinance/ICBC 刷新行情和汇率 |
 | `set_price_override` | 手动设置某标的价格 |
 | `clear_price_override` | 清除手动价格，恢复自动抓取 |
+| `backfill_history` | 按历史价格回填组合/持仓/标签每日净值快照 |
 
 ### 示例对话
 

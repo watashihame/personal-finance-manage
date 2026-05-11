@@ -8,7 +8,7 @@ import requests
 import yfinance as yf
 from sqlalchemy import select
 
-from models import PriceCache, ExchangeRate, Transaction, get_session
+from models import PriceCache, ExchangeRate, Transaction, Holding, PriceHistory, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -513,3 +513,67 @@ def clear_manual_override(symbol: str) -> None:
             session.commit()
     finally:
         session.close()
+
+
+def backfill_value_history(session) -> int:
+    """遍历 price_history 中已有的历史日期，按当时持仓数量回填 portfolio_value_history。
+
+    返回处理的天数。调用方负责提交 session（函数内会 commit 一次）。
+    """
+    holdings = session.execute(select(Holding)).scalars().all()
+    if not holdings:
+        return 0
+
+    dates = session.execute(
+        select(PriceHistory.date).distinct().order_by(PriceHistory.date)
+    ).scalars().all()
+    if not dates:
+        return 0
+
+    rates = fetch_exchange_rates()
+    rates_cny = dict(rates)
+    rates_cny["CNY"] = 1.0
+
+    all_history = session.execute(select(PriceHistory)).scalars().all()
+    ph_map: dict[tuple, float] = {}
+    for ph in all_history:
+        ph_map[(ph.symbol, ph.date)] = ph.price
+
+    holding_map = {h.symbol: h for h in holdings}
+    days_processed = 0
+
+    for d in dates:
+        holding_values: dict[str, float] = {}
+        for h in holdings:
+            price = ph_map.get((h.symbol, d))
+            if price is None:
+                continue
+            qty = compute_quantity_at_date(session, h.id, d)
+            if qty <= 0:
+                continue
+            fx = rates_cny.get(h.currency, 1.0)
+            holding_values[h.symbol] = qty * price * fx
+
+        if not holding_values:
+            continue
+
+        for sym, val in holding_values.items():
+            _upsert_portfolio_value_history(session, d, sym, "holding", val)
+
+        tag_totals: dict[str, float] = {}
+        for sym, val in holding_values.items():
+            h = holding_map.get(sym)
+            if h is None:
+                continue
+            for tag in (t.strip() for t in (h.tags or "").split(",") if t.strip()):
+                tag_totals[tag] = tag_totals.get(tag, 0.0) + val
+        for tag, val in tag_totals.items():
+            _upsert_portfolio_value_history(session, d, tag, "tag", val)
+
+        total_val = sum(holding_values.values())
+        _upsert_portfolio_value_history(session, d, "total", "total", total_val)
+
+        days_processed += 1
+
+    session.commit()
+    return days_processed

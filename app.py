@@ -15,6 +15,7 @@ from price_fetcher import (
     clear_manual_override,
     fetch_exchange_rates,
     compute_quantity_at_date,
+    backfill_value_history,
     CHART_COLORS,
 )
 
@@ -316,72 +317,10 @@ def api_tag_value_history(tag: str):
 
 @app.route("/api/backfill-value-history", methods=["POST"])
 def api_backfill_value_history():
-    """
-    遍历 price_history 中已有的历史日期，用 compute_quantity_at_date 计算
-    每天的实际持仓数量，回填 portfolio_value_history。
-    """
+    """遍历 price_history 中已有的历史日期，按当时持仓数量回填 portfolio_value_history。"""
     db = get_session()
     try:
-        holdings = db.execute(select(Holding)).scalars().all()
-        if not holdings:
-            return jsonify({"days_processed": 0})
-
-        # 所有有价格记录的历史日期
-        dates = db.execute(
-            select(PriceHistory.date).distinct().order_by(PriceHistory.date)
-        ).scalars().all()
-        if not dates:
-            return jsonify({"days_processed": 0})
-
-        rates = fetch_exchange_rates()
-        rates_cny = dict(rates)
-        rates_cny["CNY"] = 1.0
-
-        # 预建 symbol -> price_history rows 映射，减少查询
-        all_history = db.execute(select(PriceHistory)).scalars().all()
-        ph_map: dict[tuple, float] = {}  # (symbol, date) -> price
-        ph_currency: dict[str, str] = {}
-        for ph in all_history:
-            ph_map[(ph.symbol, ph.date)] = ph.price
-            ph_currency[ph.symbol] = ph.currency
-
-        days_processed = 0
-        for d in dates:
-            holding_values: dict[str, float] = {}
-            for h in holdings:
-                price = ph_map.get((h.symbol, d))
-                if price is None:
-                    continue
-                qty = compute_quantity_at_date(db, h.id, d)
-                if qty <= 0:
-                    continue
-                fx = rates_cny.get(h.currency, 1.0)
-                holding_values[h.symbol] = qty * price * fx
-
-            if not holding_values:
-                continue
-
-            from price_fetcher import _upsert_portfolio_value_history
-            holding_map = {h.symbol: h for h in holdings}
-
-            for sym, val in holding_values.items():
-                _upsert_portfolio_value_history(db, d, sym, "holding", val)
-
-            tag_totals: dict[str, float] = {}
-            for sym, val in holding_values.items():
-                h = holding_map.get(sym)
-                for tag in (t.strip() for t in (h.tags or "").split(",") if t.strip()):
-                    tag_totals[tag] = tag_totals.get(tag, 0.0) + val
-            for tag, val in tag_totals.items():
-                _upsert_portfolio_value_history(db, d, tag, "tag", val)
-
-            total_val = sum(holding_values.values())
-            _upsert_portfolio_value_history(db, d, "total", "total", total_val)
-
-            days_processed += 1
-
-        db.commit()
-        return jsonify({"days_processed": days_processed})
+        return jsonify({"days_processed": backfill_value_history(db)})
     finally:
         db.close()
 
@@ -809,6 +748,106 @@ def api_exchange_rates():
         rates = {r.from_currency: r.rate for r in db.execute(select(ExchangeRate)).scalars().all()}
         rates["CNY"] = 1.0
         return jsonify(rates)
+    finally:
+        db.close()
+
+
+def _find_paired_transaction(db, tx: Transaction) -> Transaction | None:
+    """Locate the paired transaction created alongside `tx` (counterparty side)."""
+    if not tx.counterparty_id:
+        return None
+    opposite = {
+        "BUY": "SELL", "SELL": "BUY",
+        "TRANSFER_IN": "TRANSFER_OUT", "TRANSFER_OUT": "TRANSFER_IN",
+    }.get(tx.tx_type)
+    if not opposite:
+        return None
+    return db.execute(
+        select(Transaction)
+        .where(
+            Transaction.holding_id == tx.counterparty_id,
+            Transaction.counterparty_id == tx.holding_id,
+            Transaction.tx_date == tx.tx_date,
+            Transaction.tx_type == opposite,
+            Transaction.id != tx.id,
+        )
+        .order_by(Transaction.id.desc())
+    ).scalars().first()
+
+
+@app.route("/api/transactions/<int:tx_id>", methods=["DELETE"])
+def api_transaction_delete(tx_id: int):
+    db = get_session()
+    try:
+        tx = db.get(Transaction, tx_id)
+        if tx is None:
+            return jsonify({"error": "交易记录不存在"}), 404
+
+        affected_holdings = [db.get(Holding, tx.holding_id)]
+        paired = _find_paired_transaction(db, tx)
+        if paired is not None:
+            affected_holdings.append(db.get(Holding, paired.holding_id))
+            db.delete(paired)
+        db.delete(tx)
+        db.flush()
+
+        for h in affected_holdings:
+            if h is not None:
+                recalculate_holding(db, h)
+        db.commit()
+        return jsonify({
+            "ok": True,
+            "deletedId": tx_id,
+            "pairedDeletedId": paired.id if paired else None,
+        })
+    finally:
+        db.close()
+
+
+@app.route("/api/transactions/<int:tx_id>", methods=["PATCH"])
+def api_transaction_update(tx_id: int):
+    data = request.get_json(force=True)
+    db = get_session()
+    try:
+        tx = db.get(Transaction, tx_id)
+        if tx is None:
+            return jsonify({"error": "交易记录不存在"}), 404
+
+        try:
+            if "type" in data:
+                t = str(data["type"]).upper()
+                if t not in ("BUY", "SELL", "TRANSFER_IN", "TRANSFER_OUT"):
+                    return jsonify({"error": f"无效的交易类型: {t}"}), 400
+                tx.tx_type = t
+            if "date" in data:
+                tx.tx_date = dt_date.fromisoformat(str(data["date"]))
+            if "quantity" in data:
+                q = float(data["quantity"])
+                if q <= 0:
+                    return jsonify({"error": "数量必须大于 0"}), 400
+                tx.quantity = q
+            if "unitPrice" in data:
+                up = float(data["unitPrice"])
+                if up <= 0:
+                    return jsonify({"error": "价格必须大于 0"}), 400
+                tx.unit_price = up
+            if "fee" in data:
+                tx.fee = float(data["fee"] or 0)
+            if "notes" in data:
+                tx.notes = str(data["notes"]).strip()
+        except (TypeError, ValueError) as exc:
+            return jsonify({"error": f"参数无效: {exc}"}), 400
+
+        db.flush()
+        h = db.get(Holding, tx.holding_id)
+        if h is not None:
+            recalculate_holding(db, h)
+        db.commit()
+        return jsonify({
+            "ok": True,
+            "id": tx.id,
+            "hasPaired": tx.counterparty_id is not None,
+        })
     finally:
         db.close()
 
