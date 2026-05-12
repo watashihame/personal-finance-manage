@@ -370,7 +370,9 @@ def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
 
         symbols_to_fetch = [
             h.symbol for h in holdings
-            if h.symbol not in manual_symbols and h.asset_type != "cash"
+            if h.symbol not in manual_symbols
+            and h.asset_type != "cash"
+            and h.quantity > 1e-6
         ]
 
         fund_syms      = [s for s in symbols_to_fetch if _is_cn_fund(s)]

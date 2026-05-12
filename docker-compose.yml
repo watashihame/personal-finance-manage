@@ -78,6 +78,12 @@ services:
     volumes:
       - ./mcp_server.py:/app/mcp_server.py:ro
       - ./models.py:/app/models.py:ro
+      - ./price_fetcher.py:/app/price_fetcher.py:ro
+    networks:
+      default:
+      edge_net:
+        aliases:
+          - personal-finance-mcp
 
 volumes:
   postgres_data:

@@ -9,7 +9,8 @@ const useRoute = () => useContext(window.RouteCtx);
 // Holdings list
 // =============================================================
 function HoldingsPage() {
-  const allTags = useMemo(() => Array.from(new Set(HOLDINGS.flatMap(h => h.tags))).sort(), []);
+  const activeHoldings = useMemo(() => HOLDINGS.filter(h => h.quantity > 1e-6), []);
+  const allTags = useMemo(() => Array.from(new Set(activeHoldings.flatMap(h => h.tags))).sort(), [activeHoldings]);
   const [tagFilter, setTagFilter] = useState(null);
   const [marketFilter, setMarketFilter] = useState(null);
   const [search, setSearch] = useState("");
@@ -17,7 +18,7 @@ function HoldingsPage() {
   const [sortDir, setSortDir] = useState("desc");
 
   const filtered = useMemo(() => {
-    let r = HOLDINGS;
+    let r = activeHoldings;
     if (tagFilter) r = r.filter(h => h.tags.includes(tagFilter));
     if (marketFilter) r = r.filter(h => h.market === marketFilter);
     if (search) {
@@ -30,7 +31,7 @@ function HoldingsPage() {
       return sortDir === "asc" ? av - bv : bv - av;
     });
     return r;
-  }, [tagFilter, marketFilter, search, sortKey, sortDir]);
+  }, [activeHoldings, tagFilter, marketFilter, search, sortKey, sortDir]);
 
   const totalValue = filtered.reduce((s, r) => s + r.valueCny, 0);
   const totalCost = filtered.reduce((s, r) => s + r.costCny, 0);
@@ -65,7 +66,7 @@ function HoldingsPage() {
         <div>
           <h2 style={{ margin: 0, fontSize: "var(--fs-xl)", fontWeight: 600, letterSpacing: "-0.01em" }}>持仓列表</h2>
           <div className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.08em", marginTop: 2 }}>
-            {filtered.length} OF {HOLDINGS.length} POSITIONS
+            {filtered.length} OF {activeHoldings.length} POSITIONS
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -310,7 +311,7 @@ function TrendsPage() {
         </div>
         {mode === "holding" && (
           <select className="select" value={holding} onChange={e => setHolding(e.target.value)} style={{ minWidth: 280 }}>
-            {HOLDINGS.map(h => <option key={h.symbol} value={h.symbol}>{h.name} ({h.symbol})</option>)}
+            {HOLDINGS.filter(h => h.quantity > 1e-6).map(h => <option key={h.symbol} value={h.symbol}>{h.name} ({h.symbol})</option>)}
           </select>
         )}
         {mode === "tag" && (
