@@ -349,15 +349,16 @@ function TrendsPage() {
             data={data}
             height={360}
             accent={change >= 0 ? "var(--up)" : "var(--down)"}
-            markers={
-              mode === "total" ? PORTFOLIO_TRANSACTIONS
-              : mode === "holding" ? PORTFOLIO_TRANSACTIONS.filter(t => t.symbol === holding)
-              : mode === "tag" ? (() => {
-                  const symbolsInTag = new Set(HOLDINGS.filter(h => h.tags.includes(tag)).map(h => h.symbol));
-                  return PORTFOLIO_TRANSACTIONS.filter(t => symbolsInTag.has(t.symbol));
-                })()
-              : null
-            }
+            markers={(() => {
+              const isPairedCash = t => t.isCash && t.counterpartySymbol;
+              if (mode === "total") return PORTFOLIO_TRANSACTIONS.filter(t => !isPairedCash(t));
+              if (mode === "holding") return PORTFOLIO_TRANSACTIONS.filter(t => t.symbol === holding);
+              if (mode === "tag") {
+                const symbolsInTag = new Set(HOLDINGS.filter(h => h.tags.includes(tag)).map(h => h.symbol));
+                return PORTFOLIO_TRANSACTIONS.filter(t => symbolsInTag.has(t.symbol) && !isPairedCash(t));
+              }
+              return null;
+            })()}
           />
         </div>
       </div>
@@ -669,17 +670,34 @@ function EditTransactionModal({ tx, currency, onClose, onSaved }) {
   const [notes, setNotes] = useState(tx.notes || "");
   const [saving, setSaving] = useState(false);
 
+  const otherHoldings = (window.HOLDINGS || []).filter(h => h.id !== tx.holdingId);
+  const originalCpId = tx.counterpartyId || 0;
+  const [counterpartyId, setCounterpartyId] = useState(originalCpId);
+  const [counterpartyPrice, setCounterpartyPrice] = useState("");
+
+  const selectedCounterparty = counterpartyId ? otherHoldings.find(h => h.id === counterpartyId) : null;
+  const isCashCparty = selectedCounterparty && (selectedCounterparty.type || selectedCounterparty.asset_type) === "cash";
+  const cpChanged = counterpartyId !== originalCpId;
+
   const handleSave = async () => {
     if (!quantity || !unitPrice) { alert("请填写数量和价格"); return; }
+    if (counterpartyId && !isCashCparty && cpChanged && !counterpartyPrice) {
+      alert("配对到非现金标的时需填写目标价格"); return;
+    }
     setSaving(true);
     try {
+      const body = {
+        type: txType, date, quantity: +quantity,
+        unitPrice: +unitPrice, fee: +(fee || 0), notes,
+        counterpartyHoldingId: counterpartyId || 0,
+      };
+      if (counterpartyId && !isCashCparty && counterpartyPrice) {
+        body.counterpartyUnitPrice = +counterpartyPrice;
+      }
       const r = await fetch(`/api/transactions/${tx.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: txType, date, quantity: +quantity,
-          unitPrice: +unitPrice, fee: +(fee || 0), notes,
-        }),
+        body: JSON.stringify(body),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "保存失败");
@@ -711,11 +729,37 @@ function EditTransactionModal({ tx, currency, onClose, onSaved }) {
         <Field label={`价格 (${currency})`}><input className="input" type="number" step="0.01" placeholder="0.00" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></Field>
         <Field label={`手续费 (${currency})`}><input className="input" type="number" step="0.01" placeholder="0.00" value={fee} onChange={e => setFee(e.target.value)} /></Field>
         <Field label="备注 (可选)"><input className="input" placeholder="" value={notes} onChange={e => setNotes(e.target.value)} /></Field>
-        {tx.counterpartyId ? (
-          <div style={{ fontSize: 11, color: "var(--fg-3)", background: "var(--bg-2)", padding: 8, borderRadius: "var(--r-2)" }}>
-            此交易已配对到 {tx.counterpartySymbol || "对方持仓"}。编辑仅更新本侧，对方记录保持不变。
-          </div>
-        ) : null}
+        <Field label="对方持仓"
+          hint={
+            cpChanged
+              ? (counterpartyId === 0
+                  ? "保存后将解除原有配对，删除对方的配对交易"
+                  : (originalCpId === 0
+                      ? "保存后将创建对方的配对交易"
+                      : "保存后将删除原配对、在新对方上创建配对交易"))
+              : (originalCpId === 0 ? "选择对方持仓后将自动同步配对" : "保存时同步对方金额/类型，与本侧保持一致")
+          }>
+          <select className="select" value={counterpartyId} onChange={e => {
+            setCounterpartyId(+e.target.value);
+            if (e.target.value === "0") setCounterpartyPrice("");
+          }}>
+            <option value="0">— 不配对（仅记录单边）—</option>
+            {otherHoldings.map(h => (
+              <option key={h.id} value={h.id}>
+                {(h.type || h.asset_type) === "cash" ? `${h.name} (${h.currency})` : `${h.symbol} ${h.name}`}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {counterpartyId > 0 && !isCashCparty && (
+          <Field label={`目标价格 (${selectedCounterparty?.currency || ""})`}
+            hint={cpChanged ? "更换为新对方时必填" : "留空则沿用对方当前价格"}>
+            <input className="input" type="number" step="0.01"
+              placeholder={cpChanged ? "0.00" : "沿用原价格"}
+              value={counterpartyPrice}
+              onChange={e => setCounterpartyPrice(e.target.value)} />
+          </Field>
+        )}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
           <button className="btn sm" onClick={onClose}>取消</button>
           <button className="btn primary sm" onClick={handleSave} disabled={saving}>{saving ? "保存中…" : "保存"}</button>

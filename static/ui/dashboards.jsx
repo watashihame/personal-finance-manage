@@ -118,7 +118,7 @@ function DashboardA() {
             <RangeTabs />
           </div>
           <div style={{ flex: 1, minHeight: 160 }}>
-            <LineChart data={HISTORY.slice(-90)} height={170} markers={PORTFOLIO_TRANSACTIONS} />
+            <LineChart data={HISTORY.slice(-90)} height={170} markers={PORTFOLIO_TRANSACTIONS.filter(t => !(t.isCash && t.counterpartySymbol))} />
           </div>
         </div>
       </div>
@@ -300,7 +300,7 @@ function DashboardB() {
             <RangeTabs />
           </div>
           <div style={{ padding: "8px 12px 12px" }}>
-            <LineChart data={HISTORY.slice(-90)} height={220} markers={PORTFOLIO_TRANSACTIONS} />
+            <LineChart data={HISTORY.slice(-90)} height={220} markers={PORTFOLIO_TRANSACTIONS.filter(t => !(t.isCash && t.counterpartySymbol))} />
           </div>
         </div>
 
@@ -423,7 +423,7 @@ function DashboardC() {
           <div className="card" style={{ borderRadius: "var(--r-2)" }}>
             <CHeader title="PORTFOLIO NAV" right={<RangeTabs />} />
             <div style={{ padding: "4px 10px 10px" }}>
-              <LineChart data={HISTORY} height={240} markers={PORTFOLIO_TRANSACTIONS} />
+              <LineChart data={HISTORY} height={240} markers={PORTFOLIO_TRANSACTIONS.filter(t => !(t.isCash && t.counterpartySymbol))} />
             </div>
           </div>
 

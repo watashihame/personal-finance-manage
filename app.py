@@ -8,7 +8,11 @@ from datetime import date as dt_date
 from flask import Flask, request, redirect, url_for, jsonify, session
 from sqlalchemy import select, func
 
-from models import init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate, PriceHistory, PortfolioValueHistory, recalculate_holding
+from models import (
+    init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate,
+    PriceHistory, PortfolioValueHistory, recalculate_holding,
+    find_paired_transaction, create_paired_transaction, apply_counterparty,
+)
 from price_fetcher import (
     refresh_all_prices,
     set_manual_price,
@@ -632,64 +636,15 @@ def api_transaction_add(holding_id: int):
             db.add(tx)
             db.flush()
 
-            # Create paired transaction on counterparty
             paired_tx = None
             if counterparty_id is not None:
                 cparty = db.get(Holding, counterparty_id)
                 if cparty is None:
                     return jsonify({"error": "对方持仓不存在"}), 404
-
-                # Determine paired direction: BUY↔SELL
-                if tx_type == "BUY":
-                    paired_type = "SELL"
-                elif tx_type == "SELL":
-                    paired_type = "BUY"
-                elif tx_type == "TRANSFER_IN":
-                    paired_type = "TRANSFER_OUT"
-                else:
-                    paired_type = "TRANSFER_IN"
-
-                # Calculate paired quantity
-                if cparty.asset_type == "cash":
-                    # Cash: quantity = value in cash units (unit_price=1)
-                    if tx_type in ("BUY", "TRANSFER_IN"):
-                        paired_qty = quantity * unit_price + fee
-                    else:
-                        paired_qty = quantity * unit_price - fee
-                    paired_up = 1.0
-                else:
-                    # Non-cash conversion: user specifies counterparty price
-                    paired_qty = quantity * unit_price
-                    if tx_type in ("BUY", "TRANSFER_IN"):
-                        paired_qty += fee
-                    else:
-                        paired_qty -= fee
-                    if counterparty_unit_price:
-                        paired_up = float(counterparty_unit_price)
-                        paired_qty = paired_qty / paired_up
-                    else:
-                        paired_up = counterparty_unit_price  # will fail validation
-
-                if paired_qty <= 0:
-                    return jsonify({"error": f"对方交易数量必须大于0，当前计算值为{paired_qty}"}), 400
-                if paired_up is None or paired_up <= 0:
-                    return jsonify({"error": "转换为其他投资标的需要提供目标价格 (counterpartyUnitPrice)"}), 400
-
-                paired_tx = Transaction(
-                    holding_id=counterparty_id,
-                    tx_type=paired_type,
-                    tx_date=dt_date.fromisoformat(data["date"]),
-                    quantity=paired_qty,
-                    unit_price=paired_up,
-                    fee=0.0,
-                    notes=f"来自 {h.symbol} 的{'买入' if paired_type == 'BUY' else '卖出'}",
-                )
-                db.add(paired_tx)
-                db.flush()
-
-                # Link both transactions to each other
-                tx.counterparty_id = counterparty_id
-                paired_tx.counterparty_id = holding_id
+                try:
+                    paired_tx = create_paired_transaction(db, tx, cparty, counterparty_unit_price)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
 
             recalculate_holding(db, h)
             if paired_tx:
@@ -752,29 +707,6 @@ def api_exchange_rates():
         db.close()
 
 
-def _find_paired_transaction(db, tx: Transaction) -> Transaction | None:
-    """Locate the paired transaction created alongside `tx` (counterparty side)."""
-    if not tx.counterparty_id:
-        return None
-    opposite = {
-        "BUY": "SELL", "SELL": "BUY",
-        "TRANSFER_IN": "TRANSFER_OUT", "TRANSFER_OUT": "TRANSFER_IN",
-    }.get(tx.tx_type)
-    if not opposite:
-        return None
-    return db.execute(
-        select(Transaction)
-        .where(
-            Transaction.holding_id == tx.counterparty_id,
-            Transaction.counterparty_id == tx.holding_id,
-            Transaction.tx_date == tx.tx_date,
-            Transaction.tx_type == opposite,
-            Transaction.id != tx.id,
-        )
-        .order_by(Transaction.id.desc())
-    ).scalars().first()
-
-
 @app.route("/api/transactions/<int:tx_id>", methods=["DELETE"])
 def api_transaction_delete(tx_id: int):
     db = get_session()
@@ -784,7 +716,7 @@ def api_transaction_delete(tx_id: int):
             return jsonify({"error": "交易记录不存在"}), 404
 
         affected_holdings = [db.get(Holding, tx.holding_id)]
-        paired = _find_paired_transaction(db, tx)
+        paired = find_paired_transaction(db, tx)
         if paired is not None:
             affected_holdings.append(db.get(Holding, paired.holding_id))
             db.delete(paired)
@@ -839,14 +771,37 @@ def api_transaction_update(tx_id: int):
             return jsonify({"error": f"参数无效: {exc}"}), 400
 
         db.flush()
+
+        # counterparty 字段：未传入 → 不动；传入 null/0 → 解除；传入正整数 → 设置/更换
+        new_cp_id = None
+        if "counterpartyHoldingId" in data:
+            raw = data["counterpartyHoldingId"]
+            new_cp_id = 0 if raw in (None, 0, "0", "") else int(raw)
+        new_cp_price = data.get("counterpartyUnitPrice")
+        if new_cp_price in (None, "", 0, "0"):
+            new_cp_price = None
+        else:
+            try:
+                new_cp_price = float(new_cp_price)
+            except (TypeError, ValueError):
+                return jsonify({"error": "counterpartyUnitPrice 必须是数字"}), 400
+
+        try:
+            affected_cp, paired_tx = apply_counterparty(db, tx, new_cp_id, new_cp_price)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
         h = db.get(Holding, tx.holding_id)
         if h is not None:
             recalculate_holding(db, h)
+        for cph in affected_cp:
+            recalculate_holding(db, cph)
         db.commit()
         return jsonify({
             "ok": True,
             "id": tx.id,
             "hasPaired": tx.counterparty_id is not None,
+            "pairedTransactionId": paired_tx.id if paired_tx else None,
         })
     finally:
         db.close()

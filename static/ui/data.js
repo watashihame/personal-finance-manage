@@ -78,6 +78,7 @@ async function initFromAPI() {
   const holdingMap = Object.fromEntries(HOLDINGS.map(h => [h.id, h]));
   PORTFOLIO_TRANSACTIONS = txData.map(t => {
     const h = holdingMap[t.holdingId] || {};
+    const isCash = h.type === "cash" || h.asset_type === "cash" || h.assetType === "cash";
     return {
       id: t.id, date: t.date,
       type: TX_TYPE_ZH[t.type] || t.type,
@@ -88,6 +89,7 @@ async function initFromAPI() {
       currency: h.currency || "CNY",
       fee: t.fee || 0,
       counterpartySymbol: t.counterpartySymbol || null,
+      isCash,
       note: t.notes,
     };
   });

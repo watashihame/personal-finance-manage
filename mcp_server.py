@@ -32,7 +32,11 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import select
 
-from models import init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate, PriceHistory, PortfolioValueHistory, recalculate_holding
+from models import (
+    init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate,
+    PriceHistory, PortfolioValueHistory, recalculate_holding,
+    find_paired_transaction, create_paired_transaction, apply_counterparty,
+)
 from price_fetcher import (
     refresh_all_prices,
     set_manual_price,
@@ -723,56 +727,17 @@ def add_transaction(
             session.add(tx)
             session.flush()
 
-            # Create paired transaction on counterparty
             paired_info = None
             cparty = None
             if counterparty_holding_id > 0:
                 cparty = session.get(Holding, counterparty_holding_id)
                 if not cparty:
                     return json.dumps({"ok": False, "error": f"Counterparty holding {counterparty_holding_id} not found"}, ensure_ascii=False)
-
-                if tx_type == "BUY":
-                    paired_type = "SELL"
-                elif tx_type == "SELL":
-                    paired_type = "BUY"
-                elif tx_type == "TRANSFER_IN":
-                    paired_type = "TRANSFER_OUT"
-                else:
-                    paired_type = "TRANSFER_IN"
-
-                if cparty.asset_type == "cash":
-                    if tx_type in ("BUY", "TRANSFER_IN"):
-                        paired_qty = quantity * unit_price + fee
-                    else:
-                        paired_qty = quantity * unit_price - fee
-                    paired_up = 1.0
-                else:
-                    paired_qty = quantity * unit_price
-                    if tx_type in ("BUY", "TRANSFER_IN"):
-                        paired_qty += fee
-                    else:
-                        paired_qty -= fee
-                    if counterparty_unit_price <= 0:
-                        return json.dumps({"ok": False, "error": "counterparty_unit_price required for non-cash counterparty"}, ensure_ascii=False)
-                    paired_up = counterparty_unit_price
-                    paired_qty = paired_qty / paired_up
-
-                if paired_qty <= 0:
-                    return json.dumps({"ok": False, "error": f"Paired quantity must be > 0, got {paired_qty}"}, ensure_ascii=False)
-
-                paired_tx = Transaction(
-                    holding_id=counterparty_holding_id,
-                    tx_type=paired_type,
-                    tx_date=parsed_date,
-                    quantity=paired_qty,
-                    unit_price=paired_up,
-                    fee=0.0,
-                    notes=f"来自 {h.symbol} 的{'买入' if paired_type == 'BUY' else '卖出'}",
-                )
-                session.add(paired_tx)
-                session.flush()
-                tx.counterparty_id = counterparty_holding_id
-                paired_tx.counterparty_id = holding_id
+                try:
+                    cp_price = counterparty_unit_price if counterparty_unit_price > 0 else None
+                    paired_tx = create_paired_transaction(session, tx, cparty, cp_price)
+                except ValueError as exc:
+                    return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
                 paired_info = {"transaction_id": paired_tx.id, "holding_id": cparty.id, "symbol": cparty.symbol}
 
             recalculate_holding(session, h)
@@ -843,29 +808,6 @@ def list_transactions(holding_id: int) -> str:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
 
-def _find_paired_transaction(session, tx: Transaction) -> Transaction | None:
-    """Locate the paired counterparty transaction created alongside `tx`."""
-    if not tx.counterparty_id:
-        return None
-    opposite = {
-        "BUY": "SELL", "SELL": "BUY",
-        "TRANSFER_IN": "TRANSFER_OUT", "TRANSFER_OUT": "TRANSFER_IN",
-    }.get(tx.tx_type)
-    if not opposite:
-        return None
-    return session.execute(
-        select(Transaction)
-        .where(
-            Transaction.holding_id == tx.counterparty_id,
-            Transaction.counterparty_id == tx.holding_id,
-            Transaction.tx_date == tx.tx_date,
-            Transaction.tx_type == opposite,
-            Transaction.id != tx.id,
-        )
-        .order_by(Transaction.id.desc())
-    ).scalars().first()
-
-
 @mcp.tool()
 def update_transaction(
     tx_id: int,
@@ -875,14 +817,29 @@ def update_transaction(
     unit_price: float | None = None,
     fee: float | None = None,
     notes: str | None = None,
+    counterparty_holding_id: int | None = None,
+    counterparty_unit_price: float | None = None,
 ) -> str:
     """
     Update fields on an existing transaction and recompute the owning holding's
-    quantity/cost_price. Pass only fields you want to change. Note: paired
-    counterparty transactions are NOT automatically modified — update them separately.
+    quantity/cost_price. Pass only fields you want to change.
+
+    Counterparty handling:
+      - counterparty_holding_id = None (default): leave the existing pairing unchanged.
+      - counterparty_holding_id = 0: explicitly UNLINK — deletes the paired
+        transaction on the other holding and clears this tx's counterparty_id.
+      - counterparty_holding_id > 0: SET or REPLACE the counterparty:
+          * If currently unpaired, creates a new paired transaction.
+          * If already paired to the same holding, syncs the paired tx's
+            type/date/quantity/unit_price to match this tx.
+          * If paired to a different holding, removes the old paired tx and
+            creates a new one on the specified counterparty.
+        For non-cash counterparties, you must also provide counterparty_unit_price.
+
+    The paired holding is recomputed automatically when the pairing changes.
     """
     try:
-        if all(v is None for v in (tx_type, tx_date, quantity, unit_price, fee, notes)):
+        if all(v is None for v in (tx_type, tx_date, quantity, unit_price, fee, notes, counterparty_holding_id, counterparty_unit_price)):
             return json.dumps({"ok": False, "error": "Provide at least one field to update"}, ensure_ascii=False)
 
         session = get_session()
@@ -913,19 +870,31 @@ def update_transaction(
                 tx.notes = notes.strip()
 
             session.flush()
+
+            cp_price = counterparty_unit_price if (counterparty_unit_price is not None and counterparty_unit_price > 0) else None
+            try:
+                affected_cp, paired_tx = apply_counterparty(session, tx, counterparty_holding_id, cp_price)
+            except ValueError as exc:
+                return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
             h = session.get(Holding, tx.holding_id)
             if h is not None:
                 recalculate_holding(session, h)
+            for cph in affected_cp:
+                recalculate_holding(session, cph)
             session.commit()
 
-            return json.dumps({
+            result = {
                 "ok": True,
                 "id": tx.id,
                 "holding_id": tx.holding_id,
                 "has_paired": tx.counterparty_id is not None,
                 "new_quantity": round(h.quantity, 6) if h else None,
                 "new_cost_price": round(h.cost_price, 6) if h else None,
-            }, ensure_ascii=False)
+            }
+            if paired_tx is not None:
+                result["paired_transaction_id"] = paired_tx.id
+            return json.dumps(result, ensure_ascii=False)
         finally:
             session.close()
     except Exception as e:
@@ -951,7 +920,7 @@ def delete_transaction(tx_id: int, confirm: bool) -> str:
                 return json.dumps({"ok": False, "error": f"Transaction {tx_id} not found"}, ensure_ascii=False)
 
             affected_holdings = [session.get(Holding, tx.holding_id)]
-            paired = _find_paired_transaction(session, tx)
+            paired = find_paired_transaction(session, tx)
             paired_id = paired.id if paired else None
             if paired is not None:
                 affected_holdings.append(session.get(Holding, paired.holding_id))
