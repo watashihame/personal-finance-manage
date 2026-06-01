@@ -185,14 +185,20 @@ def spa_root():
 
 @app.route("/api/refresh-prices", methods=["POST"])
 def api_refresh_prices():
+    market = (request.args.get("market") or "all").lower()
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        market = str(body.get("market", market)).lower()
+    if market not in {"all", "cn", "us", "jp", "crypto"}:
+        return jsonify({"error": f"unknown market: {market}"}), 400
+
     session = get_session()
     try:
         holdings = session.execute(select(Holding)).scalars().all()
         if not holdings:
-            return jsonify({"updated": 0, "failed": 0, "errors": [], "timestamp": ""})
-        # Also refresh exchange rates
+            return jsonify({"updated": 0, "failed": 0, "errors": [], "timestamp": "", "market": market})
         rates = fetch_exchange_rates()
-        result = refresh_all_prices(holdings, rates=rates)
+        result = refresh_all_prices(holdings, rates=rates, market=market)
         return jsonify(result)
     finally:
         session.close()

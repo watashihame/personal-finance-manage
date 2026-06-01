@@ -168,12 +168,30 @@ function ThemeToggle({ theme, onToggle }) {
   );
 }
 
+const REFRESH_MARKETS = [
+  { value: "all",    label: "全部" },
+  { value: "cn",     label: "中国 (A股+基金+黄金)" },
+  { value: "us",     label: "美股" },
+  { value: "jp",     label: "日股" },
+  { value: "crypto", label: "加密币" },
+];
+
 function RefreshButton() {
   const [loading, setLoading] = useState(false);
-  const handleClick = async () => {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [open]);
+
+  const doRefresh = async (market) => {
     setLoading(true);
+    setOpen(false);
     try {
-      await fetch("/api/refresh-prices", { method: "POST" });
+      await fetch(`/api/refresh-prices?market=${encodeURIComponent(market)}`, { method: "POST" });
       window.dispatchEvent(new Event("portfolio-refreshed"));
     } catch (e) {
       alert("刷新失败: " + e);
@@ -181,10 +199,69 @@ function RefreshButton() {
       setLoading(false);
     }
   };
+
   return (
-    <button className="btn sm" onClick={handleClick} disabled={loading}>
-      <span style={{ fontFamily: "var(--font-mono)" }}>{loading ? "…" : "↻"}</span> 刷新
-    </button>
+    <div style={{ position: "relative", display: "inline-flex" }} onClick={e => e.stopPropagation()}>
+      <button
+        className="btn sm"
+        onClick={() => doRefresh("all")}
+        disabled={loading}
+        style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+      >
+        <span style={{ fontFamily: "var(--font-mono)" }}>{loading ? "…" : "↻"}</span> 刷新
+      </button>
+      <button
+        className="btn sm"
+        onClick={() => setOpen(v => !v)}
+        disabled={loading}
+        title="分市场刷新"
+        style={{
+          borderTopLeftRadius: 0,
+          borderBottomLeftRadius: 0,
+          borderLeft: 0,
+          minWidth: 22,
+          padding: "0 6px",
+        }}
+      >
+        <span style={{ fontSize: 9 }}>▾</span>
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute",
+          top: "calc(100% + 4px)",
+          right: 0,
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--r-2)",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
+          minWidth: 200,
+          zIndex: 60,
+          overflow: "hidden",
+        }}>
+          {REFRESH_MARKETS.map(m => (
+            <button
+              key={m.value}
+              onClick={() => doRefresh(m.value)}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                border: 0,
+                background: "transparent",
+                color: "var(--fg-1)",
+                padding: "8px 12px",
+                fontSize: "var(--fs-sm)",
+                cursor: "pointer",
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = "var(--surface-2, var(--border))"}
+              onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

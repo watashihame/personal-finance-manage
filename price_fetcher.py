@@ -57,6 +57,20 @@ def _is_icbc_gold(symbol: str) -> bool:
     return symbol.upper() == "ICBC-GOLD"
 
 
+MARKETS = ("all", "cn", "us", "jp", "crypto")
+
+
+def _classify_market(symbol: str) -> str:
+    """A股/场外基金/ICBC黄金归为 cn；其余按 yfinance 后缀拆分。"""
+    if _is_ashare(symbol) or _is_cn_fund(symbol) or _is_icbc_gold(symbol):
+        return "cn"
+    if _is_japanese(symbol):
+        return "jp"
+    if _is_crypto(symbol):
+        return "crypto"
+    return "us"
+
+
 # ---------------------------------------------------------------------------
 # Exchange rates
 # ---------------------------------------------------------------------------
@@ -158,6 +172,28 @@ def _fetch_tushare(symbols: list[str]) -> dict[str, float | None]:
         return {s: None for s in symbols}
 
 
+def _fetch_tushare_us(symbols: list[str]) -> dict[str, float | None]:
+    """美股 T-1 收盘价回退。仅在 yfinance 拿不到价格时调用。"""
+    token = _load_tushare_token()
+    if not token:
+        return {s: None for s in symbols}
+
+    try:
+        import tushare as ts
+        pro = ts.pro_api(token)
+        ts_codes = ",".join(symbols)
+        df = pro.us_daily(ts_code=ts_codes, limit=len(symbols))
+        if df is None or df.empty:
+            return {s: None for s in symbols}
+        df = df.sort_values("trade_date", ascending=False)
+        df = df.drop_duplicates(subset="ts_code", keep="first")
+        price_map = dict(zip(df["ts_code"], df["close"]))
+        return {sym: float(price_map[sym]) if sym in price_map else None for sym in symbols}
+    except Exception as exc:
+        logger.error("Tushare us_daily fetch failed: %s", exc)
+        return {s: None for s in symbols}
+
+
 # ---------------------------------------------------------------------------
 # CN open-end fund NAV via 天天基金网 (eastmoney) — free, no token required
 # ---------------------------------------------------------------------------
@@ -254,22 +290,24 @@ def _fetch_icbc_gold(symbols: list[str]) -> dict[str, float | None]:
 # US / JP / Crypto prices via yfinance
 # ---------------------------------------------------------------------------
 
+def _fetch_one_yfinance(sym: str) -> tuple[str, float | None]:
+    try:
+        price = yf.Ticker(sym).fast_info.last_price
+        return sym, float(price) if price is not None else None
+    except Exception as exc:
+        logger.warning("yfinance failed for %s: %s", sym, exc)
+        return sym, None
+
+
 def _fetch_yfinance(symbols: list[str]) -> dict[str, float | None]:
     if not symbols:
         return {}
     results: dict[str, float | None] = {}
-    try:
-        tickers = yf.Tickers(" ".join(symbols))
-        for sym in symbols:
-            try:
-                price = tickers.tickers[sym].fast_info.last_price
-                results[sym] = float(price) if price is not None else None
-            except Exception as exc:
-                logger.warning("yfinance failed for %s: %s", sym, exc)
-                results[sym] = None
-    except Exception as exc:
-        logger.error("yfinance batch fetch failed: %s", exc)
-        results = {s: None for s in symbols}
+    with ThreadPoolExecutor(max_workers=min(len(symbols), 8)) as pool:
+        futures = {pool.submit(_fetch_one_yfinance, sym): sym for sym in symbols}
+        for future in as_completed(futures):
+            sym, price = future.result()
+            results[sym] = price
     return results
 
 
@@ -354,11 +392,18 @@ def _upsert_cache(session, symbol: str, price: float, currency: str, source: str
 # Public API
 # ---------------------------------------------------------------------------
 
-def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
+def refresh_all_prices(holdings, rates: dict | None = None, market: str = "all") -> dict:
     """
     Fetch prices for all holdings. Skip symbols with is_manual=True.
-    Returns {"updated": n, "failed": n, "errors": [...], "timestamp": str}
+    market: "all" | "cn" | "us" | "jp" | "crypto"
+        - "cn" 含 A股 / 场外基金 / ICBC 黄金
+        - "us" / "jp" / "crypto" 走 yfinance，按 symbol 后缀区分
+        - 非 "all" 时只更新被选中市场的 price_cache / price_history，
+          不写当日的 portfolio_value_history 快照（避免半截数据覆盖完整快照）
+    Returns {"updated": n, "failed": n, "errors": [...], "timestamp": str, "market": str}
     """
+    if market not in MARKETS:
+        raise ValueError(f"unknown market {market!r}, expected one of {MARKETS}")
     session = get_session()
     try:
         # Find which symbols have manual override
@@ -373,6 +418,7 @@ def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
             if h.symbol not in manual_symbols
             and h.asset_type != "cash"
             and h.quantity > 1e-6
+            and (market == "all" or _classify_market(h.symbol) == market)
         ]
 
         fund_syms      = [s for s in symbols_to_fetch if _is_cn_fund(s)]
@@ -381,15 +427,39 @@ def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
         other_syms     = [s for s in symbols_to_fetch if
                           not _is_ashare(s) and not _is_cn_fund(s) and not _is_icbc_gold(s)]
 
-        all_results: dict[str, float | None] = {}
+        fetch_tasks: list[tuple[str, callable, list[str]]] = []
         if fund_syms:
-            all_results.update(_fetch_eastmoney_fund(fund_syms))
+            fetch_tasks.append(("eastmoney", _fetch_eastmoney_fund, fund_syms))
         if ashare_syms:
-            all_results.update(_fetch_tushare(ashare_syms))
+            fetch_tasks.append(("tushare", _fetch_tushare, ashare_syms))
         if icbc_gold_syms:
-            all_results.update(_fetch_icbc_gold(icbc_gold_syms))
+            fetch_tasks.append(("icbc", _fetch_icbc_gold, icbc_gold_syms))
         if other_syms:
-            all_results.update(_fetch_yfinance(other_syms))
+            fetch_tasks.append(("yfinance", _fetch_yfinance, other_syms))
+
+        all_results: dict[str, float | None] = {}
+        if fetch_tasks:
+            with ThreadPoolExecutor(max_workers=len(fetch_tasks)) as pool:
+                futures = {pool.submit(fn, syms): name for name, fn, syms in fetch_tasks}
+                for future in as_completed(futures):
+                    name = futures[future]
+                    try:
+                        all_results.update(future.result())
+                    except Exception as exc:
+                        logger.error("price source %s failed: %s", name, exc)
+
+        # 美股回退：yfinance 拿不到价格的 US 标的，用 Tushare us_daily (T-1) 兑底。
+        us_fallback_syms: set[str] = set()
+        us_failed = [
+            s for s in other_syms
+            if all_results.get(s) is None and not _is_japanese(s) and not _is_crypto(s)
+        ]
+        if us_failed:
+            fallback = _fetch_tushare_us(us_failed)
+            for sym, price in fallback.items():
+                if price is not None:
+                    all_results[sym] = price
+                    us_fallback_syms.add(sym)
 
         # Determine currency per symbol
         holding_map = {h.symbol: h for h in holdings}
@@ -411,57 +481,60 @@ def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
                 source = "tushare"
             elif _is_icbc_gold(sym):
                 source = "icbc"
+            elif sym in us_fallback_syms:
+                source = "tushare-us"
             else:
                 source = "yfinance"
             _upsert_cache(session, sym, price, currency, source)
             _upsert_history(session, sym, price, currency, source)
             updated += 1
 
-        # --- 组合价值快照 ---
-        if rates is None:
-            rates = fetch_exchange_rates()
-        rates_cny = dict(rates)
-        rates_cny["CNY"] = 1.0
-        today = datetime.now(timezone.utc).date()
+        # --- 组合价值快照（仅全量刷新时写，避免分市场刷新覆盖完整快照） ---
+        if market == "all":
+            if rates is None:
+                rates = fetch_exchange_rates()
+            rates_cny = dict(rates)
+            rates_cny["CNY"] = 1.0
+            today = datetime.now(timezone.utc).date()
 
-        holding_values: dict[str, float] = {}
-        for sym, price in all_results.items():
-            if price is None:
-                continue
-            h = holding_map.get(sym)
-            if h is None:
-                continue
-            qty = compute_quantity_at_date(session, h.id, today)
-            if qty <= 0:
-                continue
-            fx = rates_cny.get(h.currency, 1.0)
-            holding_values[sym] = qty * price * fx
+            holding_values: dict[str, float] = {}
+            for sym, price in all_results.items():
+                if price is None:
+                    continue
+                h = holding_map.get(sym)
+                if h is None:
+                    continue
+                qty = compute_quantity_at_date(session, h.id, today)
+                if qty <= 0:
+                    continue
+                fx = rates_cny.get(h.currency, 1.0)
+                holding_values[sym] = qty * price * fx
 
-        # Add cash holdings (price = 1.0, no historical quantity needed)
-        for h in holdings:
-            if h.asset_type != "cash":
-                continue
-            if h.quantity <= 0:
-                continue
-            fx = rates_cny.get(h.currency, 1.0)
-            holding_values[h.symbol] = h.quantity * 1.0 * fx
+            # Add cash holdings (price = 1.0, no historical quantity needed)
+            for h in holdings:
+                if h.asset_type != "cash":
+                    continue
+                if h.quantity <= 0:
+                    continue
+                fx = rates_cny.get(h.currency, 1.0)
+                holding_values[h.symbol] = h.quantity * 1.0 * fx
 
-        for sym, val in holding_values.items():
-            _upsert_portfolio_value_history(session, today, sym, "holding", val)
+            for sym, val in holding_values.items():
+                _upsert_portfolio_value_history(session, today, sym, "holding", val)
 
-        tag_totals: dict[str, float] = {}
-        for sym, val in holding_values.items():
-            h = holding_map.get(sym)
-            if h is None:
-                continue
-            for tag in (t.strip() for t in (h.tags or "").split(",") if t.strip()):
-                tag_totals[tag] = tag_totals.get(tag, 0.0) + val
-        for tag, val in tag_totals.items():
-            _upsert_portfolio_value_history(session, today, tag, "tag", val)
+            tag_totals: dict[str, float] = {}
+            for sym, val in holding_values.items():
+                h = holding_map.get(sym)
+                if h is None:
+                    continue
+                for tag in (t.strip() for t in (h.tags or "").split(",") if t.strip()):
+                    tag_totals[tag] = tag_totals.get(tag, 0.0) + val
+            for tag, val in tag_totals.items():
+                _upsert_portfolio_value_history(session, today, tag, "tag", val)
 
-        total_val = sum(holding_values.values())
-        if total_val > 0:
-            _upsert_portfolio_value_history(session, today, "total", "total", total_val)
+            total_val = sum(holding_values.values())
+            if total_val > 0:
+                _upsert_portfolio_value_history(session, today, "total", "total", total_val)
         # --- end snapshot ---
 
         session.commit()
@@ -469,6 +542,7 @@ def refresh_all_prices(holdings, rates: dict | None = None) -> dict:
             "updated": updated,
             "failed": failed,
             "errors": errors,
+            "market": market,
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         }
     finally:

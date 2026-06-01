@@ -948,18 +948,30 @@ def delete_transaction(tx_id: int, confirm: bool) -> str:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def refresh_prices() -> str:
+def refresh_prices(
+    market: Literal["all", "cn", "us", "jp", "crypto"] = "all",
+) -> str:
     """
-    Trigger a live price refresh for all holdings from market data sources
-    (Tushare for A-shares, yfinance for US/JP/crypto). Also refreshes exchange rates.
-    Holdings with manual price overrides are skipped. This may take 10-30 seconds.
+    Trigger a live price refresh from market data sources. Data sources run in
+    parallel (Tushare for A-shares, eastmoney for CN funds, yfinance for
+    US/JP/crypto, ICBC scraper for gold). US stocks that yfinance fails to
+    fetch fall back to Tushare us_daily (T-1 close, source="tushare-us").
+    Also refreshes exchange rates. Holdings with manual price overrides are
+    skipped.
+
+    market filter:
+      - "all" (default): refresh everything and write today's portfolio snapshot
+      - "cn": A-shares + CN open-end funds + ICBC gold
+      - "us" / "jp" / "crypto": yfinance, split by symbol suffix
+      When market != "all", the portfolio_value_history snapshot is skipped so
+      a partial refresh does not overwrite a complete daily snapshot.
     """
     try:
         fetch_exchange_rates()
         session = get_session()
         try:
             holdings = session.execute(select(Holding)).scalars().all()
-            result = refresh_all_prices(holdings)
+            result = refresh_all_prices(holdings, market=market)
             return json.dumps(result, ensure_ascii=False, indent=2)
         finally:
             session.close()
