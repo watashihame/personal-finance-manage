@@ -5,7 +5,9 @@
 ## 功能
 
 - **多市场支持** — A 股（沪深）、美股、日股、加密货币
-- **自动行情** — A 股通过 [Tushare Pro](https://tushare.pro) 获取，美股/日股/加密通过 yfinance 获取
+- **自动行情** — A 股通过 [Tushare Pro](https://tushare.pro) 获取，场外基金走天天基金网，工行积存金从工行页面抓取，美股/日股/加密通过 yfinance 获取
+- **多源并行刷新** — 4 个数据源并行调用，yfinance 内部 8 路并行；美股 yfinance 拿不到价时回退 Tushare us_daily（T-1 收盘价，标记为 `tushare-us`）
+- **分市场刷新** — 可只刷新单个市场（`cn` / `us` / `jp` / `crypto`），分市场刷新时不写当日组合快照避免覆盖
 - **汇率换算** — 自动获取 USD/JPY 对 CNY 汇率，所有持仓以人民币汇总
 - **手动价格** — 可为任意标的手动设置价格，屏蔽自动抓取
 - **标签分类** — 为持仓添加自定义标签，支持按标签筛选
@@ -222,7 +224,7 @@ ALTER TABLE holdings ADD COLUMN tags VARCHAR(200) DEFAULT '';
 | `/api/portfolio-data` | GET | 饼图数据 |
 | `/api/tags` | GET | 标签维度市值汇总 |
 | `/api/exchange-rates` | GET | 当前缓存汇率 |
-| `/api/refresh-prices` | POST | 刷新所有持仓行情 + 汇率 |
+| `/api/refresh-prices` | POST | 刷新行情 + 汇率，支持 `?market=all\|cn\|us\|jp\|crypto`（默认 `all`） |
 | `/api/override-price` | POST | 手动设置价格 |
 | `/api/clear-override` | POST | 清除手动价格 |
 | `/api/price-history/<symbol>` | GET | 获取某标的历史价格 |
@@ -378,7 +380,7 @@ networks:
 | `add_transaction` | 记录买卖/转入转出，自动重算持仓成本和数量，可联动对方持仓 |
 | `update_transaction` | 修改交易字段，重算所属持仓 |
 | `delete_transaction` | 删除交易（联动删除配对交易，需传 `confirm=true`） |
-| `refresh_prices` | 从 Tushare/eastmoney/yfinance/ICBC 刷新行情和汇率 |
+| `refresh_prices` | 并行刷新行情和汇率，可传 `market="all\|cn\|us\|jp\|crypto"` 分市场刷新；美股 yfinance 失败时自动回退 Tushare us_daily |
 | `set_price_override` | 手动设置某标的价格 |
 | `clear_price_override` | 清除手动价格，恢复自动抓取 |
 | `backfill_history` | 按历史价格回填组合/持仓/标签每日净值快照 |
