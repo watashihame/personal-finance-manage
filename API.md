@@ -269,13 +269,18 @@ curl -X PATCH http://localhost/api/holdings/1/tags \
 
 ## 5. 刷新行情价格
 
-触发所有持仓的行情抓取，同时更新汇率缓存。标记为"手动价格"的持仓不会被覆盖。
+触发所有持仓的行情抓取，同时更新汇率缓存。4 个数据源（tushare / eastmoney / yfinance / ICBC）并行调用，yfinance 内部 8 路并行；美股 yfinance 拿不到价时自动回退 Tushare `us_daily`（T-1 收盘价）。标记为"手动价格"的持仓不会被覆盖。
 
 ```
 POST /api/refresh-prices
+POST /api/refresh-prices?market=us
 ```
 
-**请求体：** 无
+**请求参数：**
+
+| 参数 | 位置 | 取值 | 默认 | 说明 |
+|------|------|------|------|------|
+| `market` | query 或 JSON body | `all` / `cn` / `us` / `jp` / `crypto` | `all` | 只刷新指定市场的持仓。`cn` 含 A 股 / 场外基金 / ICBC 黄金。**非 `all` 时不会写当日组合快照**，避免覆盖完整的 portfolio_value_history。 |
 
 **响应示例（成功）：**
 
@@ -284,6 +289,7 @@ POST /api/refresh-prices
   "updated": 5,
   "failed": 1,
   "errors": ["BTC-USD: 获取失败"],
+  "market": "all",
   "timestamp": "2026-03-29 08:30 UTC"
 }
 ```
@@ -295,6 +301,7 @@ POST /api/refresh-prices
 | `updated` | integer | 成功更新的标的数量 |
 | `failed` | integer | 获取失败的标的数量 |
 | `errors` | string[] | 各失败条目的错误描述 |
+| `market` | string | 本次刷新的市场范围 |
 | `timestamp` | string | 本次刷新完成时间（UTC） |
 
 **响应示例（持仓为空）：**

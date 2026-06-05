@@ -358,6 +358,7 @@ networks:
 | Tool | 说明 |
 |------|------|
 | `get_portfolio_summary` | 完整持仓汇总（总市值/成本/盈亏 + 各持仓明细） |
+| `get_portfolio_market` | 按市场（`CN/US/JP/CRYPTO/OTHER`）查看持仓汇总与明细；传 `refresh=true` 先对该市场刷新行情（`OTHER` 无自动数据源，直接读取） |
 | `get_holding_detail` | 单个持仓详情：当前价/盈亏/标签 + 全部交易 + 近 60 天价格 |
 | `search_holdings` | 按名称或代码搜索持仓，空字符串返回全部 |
 | `list_transactions` | 查看某持仓的全部交易记录 |

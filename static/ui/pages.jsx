@@ -36,6 +36,7 @@ function HoldingsPage() {
   const totalValue = filtered.reduce((s, r) => s + r.valueCny, 0);
   const totalCost = filtered.reduce((s, r) => s + r.costCny, 0);
   const totalPnl = totalValue - totalCost;
+  const breakdown = useMemo(() => marketBreakdown(filtered), [filtered]);
 
   const toggleSort = k => {
     if (sortKey === k) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -77,7 +78,7 @@ function HoldingsPage() {
 
       {/* Summary chips */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        <SummaryChip label="总市值" value={fmt.cny(totalValue, 2)} />
+        <ExpandableSummaryChip label="总市值" value={fmt.cny(totalValue, 2)} breakdown={breakdown} />
         <SummaryChip label="总成本" value={fmt.cny(totalCost, 2)} muted />
         <SummaryChip label="浮盈" value={fmt.signed(totalPnl, 2)} color={totalPnl >= 0 ? "up" : "down"} />
         <SummaryChip label="盈亏率" value={fmt.pct((totalPnl / totalCost) * 100)} color={totalPnl >= 0 ? "up" : "down"} />
@@ -194,6 +195,76 @@ function SummaryChip({ label, value, color, muted }) {
         fontSize: "var(--fs-md)", fontWeight: 600,
         color: color === "up" ? "var(--up)" : color === "down" ? "var(--down)" : muted ? "var(--fg-2)" : "var(--fg)",
       }}>{value}</span>
+    </div>
+  );
+}
+
+function ExpandableSummaryChip({ label, value, breakdown }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = React.useRef(null);
+  const expandable = breakdown && breakdown.length > 1;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", display: "inline-block" }}>
+      <div
+        onClick={() => expandable && setOpen(o => !o)}
+        style={{
+          display: "inline-flex", flexDirection: "column", gap: 2,
+          padding: "8px 14px",
+          background: "var(--surface)",
+          border: "1px solid " + (open ? "var(--fg)" : "var(--border)"),
+          borderRadius: "var(--r-2)",
+          cursor: expandable ? "pointer" : "default",
+          userSelect: "none",
+        }}
+      >
+        <span className="mono" style={{ fontSize: 9, color: "var(--fg-3)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+          {label}
+          {expandable && <span style={{ marginLeft: 6, color: "var(--fg-3)" }}>{open ? "▴" : "▾"}</span>}
+        </span>
+        <span className="num" style={{ fontSize: "var(--fs-md)", fontWeight: 600 }}>{value}</span>
+      </div>
+
+      {open && expandable && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20,
+          minWidth: 260,
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--r-2)",
+          boxShadow: "var(--shadow-2)",
+          padding: 6,
+        }}>
+          {breakdown.map(b => {
+            const up = b.pnlCny >= 0;
+            return (
+              <div key={b.market} style={{
+                display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: 12,
+                alignItems: "baseline", padding: "6px 8px",
+                borderBottom: "1px dashed var(--border-subtle)",
+              }}>
+                <span className="chip">{MARKET_LABEL[b.market]}</span>
+                <span className="num" style={{ textAlign: "right" }}>{fmt.cny(b.valueCny, 2)}</span>
+                <span className="num" style={{ fontSize: 10, color: up ? "var(--up)" : "var(--down)", minWidth: 60, textAlign: "right" }}>
+                  {fmt.pct(b.pnlPct)}
+                </span>
+                <span className="mono" style={{ fontSize: 10, color: "var(--fg-3)", minWidth: 44, textAlign: "right" }}>
+                  {b.sharePct.toFixed(1)}%
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

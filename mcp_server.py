@@ -201,6 +201,56 @@ def get_portfolio_summary() -> str:
 
 
 @mcp.tool()
+def get_portfolio_market(
+    market: Literal["CN", "US", "JP", "CRYPTO", "OTHER"],
+    refresh: bool = False,
+) -> str:
+    """
+    Get the current portfolio for a single market: total market value (CNY),
+    total cost, overall P&L, and a per-holding breakdown (sorted by market value
+    descending), filtered to holdings whose market field equals the given market
+    (CN / US / JP / CRYPTO / OTHER).
+
+    refresh=True first triggers a live price refresh for that market before
+    reading (CN / US / JP / CRYPTO only — OTHER has no automatic data source and
+    is read as-is). The partial refresh does not overwrite the daily portfolio
+    snapshot. Percentages are relative to this market only, not the whole portfolio.
+    """
+    try:
+        refreshed = None
+        if refresh and market != "OTHER":
+            fetch_exchange_rates()
+            session = get_session()
+            try:
+                holdings = session.execute(select(Holding)).scalars().all()
+                refreshed = refresh_all_prices(holdings, market=market.lower())
+            finally:
+                session.close()
+
+        rows, _, _ = _load_portfolio_data()
+        market_rows = [r for r in rows if r["market"] == market]
+        market_rows.sort(key=lambda r: r["market_value_cny"], reverse=True)
+
+        total_value = sum(r["market_value_cny"] for r in market_rows)
+        total_cost = sum(r["cost_cny"] for r in market_rows)
+        total_pnl = total_value - total_cost
+        total_pnl_pct = (total_pnl / total_cost * 100) if total_cost else 0.0
+
+        return json.dumps({
+            "market": market,
+            "refreshed": refreshed,
+            "total_value_cny": round(total_value, 2),
+            "total_cost_cny": round(total_cost, 2),
+            "total_pnl_cny": round(total_pnl, 2),
+            "total_pnl_pct": round(total_pnl_pct, 2),
+            "holding_count": len(market_rows),
+            "holdings": market_rows,
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
 def search_holdings(q: str = "") -> str:
     """
     Search holdings by name or symbol (case-insensitive substring match).

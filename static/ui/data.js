@@ -25,6 +25,25 @@ const fmt = {
 };
 
 const MARKET_LABEL = { CN: "A股", US: "美股", JP: "日股", CRYPTO: "加密", OTHER: "其他" };
+
+function marketBreakdown(rows) {
+  const buckets = {};
+  for (const h of rows) {
+    const m = h.market || "OTHER";
+    const b = buckets[m] || (buckets[m] = { market: m, valueCny: 0, costCny: 0, pnlCny: 0 });
+    b.valueCny += h.valueCny || 0;
+    b.costCny  += h.costCny  || 0;
+    b.pnlCny   += h.pnlCny   || 0;
+  }
+  const total = Object.values(buckets).reduce((s, b) => s + b.valueCny, 0);
+  return Object.values(buckets)
+    .map(b => ({
+      ...b,
+      pnlPct: b.costCny > 0 ? (b.pnlCny / b.costCny) * 100 : 0,
+      sharePct: total > 0 ? (b.valueCny / total) * 100 : 0,
+    }))
+    .sort((a, b) => b.valueCny - a.valueCny);
+}
 const TX_TYPE_ZH = { BUY: "买入", SELL: "卖出", TRANSFER_IN: "转入", TRANSFER_OUT: "转出" };
 
 // Global state (populated by initFromAPI)
@@ -109,4 +128,4 @@ function _syncWindow() {
 
 _syncWindow();
 
-Object.assign(window, { computeRow, fmt, MARKET_LABEL, TX_TYPE_ZH, initFromAPI });
+Object.assign(window, { computeRow, fmt, MARKET_LABEL, TX_TYPE_ZH, initFromAPI, marketBreakdown });

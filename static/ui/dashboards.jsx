@@ -30,6 +30,36 @@ function MetricCard({ label, value, sub, accent, mono = true, big = false }) {
   );
 }
 
+function MarketStrip({ holdings, compact = false }) {
+  const breakdown = marketBreakdown(holdings);
+  if (breakdown.length <= 1) return null;
+
+  return (
+    <div style={{
+      display: "flex", flexWrap: "wrap", gap: compact ? 14 : 22,
+      paddingTop: 10, marginTop: 4,
+      borderTop: "1px dashed var(--border-subtle)",
+    }}>
+      {breakdown.map(b => {
+        const up = b.pnlCny >= 0;
+        return (
+          <div key={b.market} style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+            <div className="mono" style={{ fontSize: 9, color: "var(--fg-3)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              {MARKET_LABEL[b.market]} · {b.sharePct.toFixed(1)}%
+            </div>
+            <div className="num" style={{ fontSize: compact ? "var(--fs-sm)" : "var(--fs-md)", fontWeight: 600 }}>
+              {fmt.cny(b.valueCny, 0)}
+            </div>
+            <div className="num" style={{ fontSize: 10, color: up ? "var(--up)" : "var(--down)" }}>
+              {fmt.signed(b.pnlCny, 0)} ({fmt.pct(b.pnlPct)})
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function PageWrap({ children, max = 1400 }) {
   return (
     <div className="page-enter" style={{ maxWidth: max, margin: "0 auto", padding: "24px 24px 32px" }}>
@@ -59,11 +89,8 @@ function DashboardA() {
 
   const palette = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)", "var(--cat-4)", "var(--cat-5)", "var(--cat-6)", "var(--cat-7)", "var(--cat-8)"];
 
-  // top distribution: top 8 by value, rest as "其他"
-  const sorted = [...HOLDINGS].sort((a, b) => b.valueCny - a.valueCny);
-  const top = sorted.slice(0, 7).map(h => ({ label: h.name, value: h.valueCny }));
-  const rest = sorted.slice(7).reduce((s, h) => s + h.valueCny, 0);
-  if (rest > 0) top.push({ label: "其他持仓", value: rest });
+  // 按市场分布（A股/美股/日股/加密/其他）
+  const top = marketBreakdown(HOLDINGS).map(b => ({ label: MARKET_LABEL[b.market], value: b.valueCny }));
 
   return (
     <PageWrap max={1280}>
@@ -104,6 +131,7 @@ function DashboardA() {
               <div className="num" style={{ fontSize: "var(--fs-lg)", fontWeight: 500, color: "var(--fg-1)" }}>{fmt.cny(TOTAL_COST, 0)}</div>
             </div>
           </div>
+          <MarketStrip holdings={HOLDINGS} />
         </div>
 
         <div style={{
@@ -127,12 +155,12 @@ function DashboardA() {
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1.2fr)", gap: 18, marginBottom: 18 }}>
         <div className="card">
           <div className="card-head">
-            <span className="title">资产分配</span>
-            <span style={{ color: "var(--fg-3)", fontSize: "var(--fs-xs)" }}>{HOLDINGS.length} 项持仓</span>
+            <span className="title">市场分布</span>
+            <span style={{ color: "var(--fg-3)", fontSize: "var(--fs-xs)" }}>{top.length} 个市场 · {HOLDINGS.length} 项持仓</span>
           </div>
           <div className="card-body" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 28, alignItems: "center" }}>
             <DonutChart data={top} size={180} thickness={20} palette={palette} />
-            <BarList data={top.slice(0, 6)} palette={palette} valueFormat={v => fmt.k(v)} labelMax={14} />
+            <BarList data={top} palette={palette} valueFormat={v => fmt.k(v)} labelMax={14} />
           </div>
         </div>
 
@@ -268,25 +296,30 @@ function DashboardB() {
   const dayUp = DAY_PNL >= 0;
   const totalUp = TOTAL_PNL >= 0;
   const palette = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)", "var(--cat-4)", "var(--cat-5)", "var(--cat-6)", "var(--cat-7)", "var(--cat-8)"];
-  const sorted = [...HOLDINGS].sort((a, b) => b.valueCny - a.valueCny);
-  const top = sorted.slice(0, 8).map(h => ({ label: h.name, value: h.valueCny }));
+  const top = marketBreakdown(HOLDINGS).map(b => ({ label: MARKET_LABEL[b.market], value: b.valueCny }));
 
   return (
     <div className="page-enter" style={{ padding: "16px 20px 24px" }}>
       {/* Top metrics strip */}
       <div style={{
-        display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr",
         border: "1px solid var(--border)",
         background: "var(--surface)",
         borderRadius: "var(--r-3)",
         marginBottom: 14,
         overflow: "hidden",
       }}>
-        <BMetric label="总资产 · CNY" value={fmt.cny(TOTAL_VALUE, 2)} hero />
-        <BMetric label="今日盈亏" value={fmt.signed(DAY_PNL, 2)} sub={fmt.pct(DAY_PNL_PCT)} color={dayUp ? "up" : "down"} />
-        <BMetric label="累计盈亏" value={fmt.signed(TOTAL_PNL, 2)} sub={fmt.pct(TOTAL_PNL_PCT)} color={totalUp ? "up" : "down"} />
-        <BMetric label="总成本" value={fmt.cny(TOTAL_COST, 0)} sub={`${HOLDINGS.length} 项持仓`} />
-        <BMetric label="日波幅" value={(Math.abs(DAY_PNL_PCT) * 1.6).toFixed(2) + "%"} sub="60D vol" />
+        <div style={{
+          display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr",
+        }}>
+          <BMetric label="总资产 · CNY" value={fmt.cny(TOTAL_VALUE, 2)} hero />
+          <BMetric label="今日盈亏" value={fmt.signed(DAY_PNL, 2)} sub={fmt.pct(DAY_PNL_PCT)} color={dayUp ? "up" : "down"} />
+          <BMetric label="累计盈亏" value={fmt.signed(TOTAL_PNL, 2)} sub={fmt.pct(TOTAL_PNL_PCT)} color={totalUp ? "up" : "down"} />
+          <BMetric label="总成本" value={fmt.cny(TOTAL_COST, 0)} sub={`${HOLDINGS.length} 项持仓`} />
+          <BMetric label="日波幅" value={(Math.abs(DAY_PNL_PCT) * 1.6).toFixed(2) + "%"} sub="60D vol" />
+        </div>
+        <div style={{ padding: "0 16px 12px" }}>
+          <MarketStrip holdings={HOLDINGS} compact />
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 14, marginBottom: 14 }}>
@@ -308,8 +341,8 @@ function DashboardB() {
         <div className="card">
           <div className="card-head">
             <span className="title">
-              <span className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.1em" }}>ALLOC</span>
-              <span style={{ marginLeft: 8 }}>分布</span>
+              <span className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.1em" }}>MARKET</span>
+              <span style={{ marginLeft: 8 }}>市场分布</span>
             </span>
           </div>
           <div className="card-body" style={{ display: "flex", justifyContent: "center", padding: "8px 14px 14px" }}>
@@ -405,15 +438,19 @@ function DashboardC() {
         borderRadius: "var(--r-2)",
         padding: "14px 18px",
         marginBottom: 10,
-        display: "grid",
-        gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1fr",
-        gap: 0,
       }}>
-        <CHeroCell label="PORTFOLIO NAV / CNY" value={fmt.cny(TOTAL_VALUE, 2)} big />
-        <CHeroCell label="DAY P&L" value={fmt.signed(DAY_PNL, 0)} sub={fmt.pct(DAY_PNL_PCT)} color={dayUp ? "up" : "down"} />
-        <CHeroCell label="TOTAL P&L" value={fmt.signed(TOTAL_PNL, 0)} sub={fmt.pct(TOTAL_PNL_PCT)} color={totalUp ? "up" : "down"} />
-        <CHeroCell label="COST BASIS" value={fmt.k(TOTAL_COST)} sub={`${HOLDINGS.length} POSITIONS`} />
-        <CHeroCell label="DAY RANGE" value={(Math.abs(DAY_PNL_PCT) * 1.4).toFixed(2) + "%"} sub="60D σ" last />
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "1.2fr 1fr 1fr 1fr 1fr",
+          gap: 0,
+        }}>
+          <CHeroCell label="PORTFOLIO NAV / CNY" value={fmt.cny(TOTAL_VALUE, 2)} big />
+          <CHeroCell label="DAY P&L" value={fmt.signed(DAY_PNL, 0)} sub={fmt.pct(DAY_PNL_PCT)} color={dayUp ? "up" : "down"} />
+          <CHeroCell label="TOTAL P&L" value={fmt.signed(TOTAL_PNL, 0)} sub={fmt.pct(TOTAL_PNL_PCT)} color={totalUp ? "up" : "down"} />
+          <CHeroCell label="COST BASIS" value={fmt.k(TOTAL_COST)} sub={`${HOLDINGS.length} POSITIONS`} />
+          <CHeroCell label="DAY RANGE" value={(Math.abs(DAY_PNL_PCT) * 1.4).toFixed(2) + "%"} sub="60D σ" last />
+        </div>
+        <MarketStrip holdings={HOLDINGS} compact />
       </div>
 
       {/* Main grid */}
@@ -457,10 +494,10 @@ function DashboardC() {
         {/* Right column: distribution + tags + movers */}
         <div style={{ display: "grid", gridTemplateRows: "auto auto auto", gap: 10 }}>
           <div className="card" style={{ borderRadius: "var(--r-2)" }}>
-            <CHeader title="ALLOCATION" sub={`${HOLDINGS.length} pos`} />
+            <CHeader title="MARKET / TAGS" sub={`${HOLDINGS.length} pos`} />
             <div style={{ padding: "8px 12px 12px" }}>
               <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
-                <DonutChart data={[...HOLDINGS].sort((a,b) => b.valueCny-a.valueCny).slice(0, 8).map(h => ({ label: h.name, value: h.valueCny }))} size={150} thickness={18} palette={palette} />
+                <DonutChart data={marketBreakdown(HOLDINGS).map(b => ({ label: MARKET_LABEL[b.market], value: b.valueCny }))} size={150} thickness={18} palette={palette} />
               </div>
               <BarList
                 data={TAG_BUCKETS.slice(0, 6).map(t => ({ label: t.tag, value: t.value }))}
