@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 
 from models import (
     init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate,
-    PriceHistory, PortfolioValueHistory, recalculate_holding,
+    PriceHistory, PortfolioValueHistory, recalculate_holding, compute_realized_pnl,
     find_paired_transaction, create_paired_transaction, apply_counterparty,
 )
 from price_fetcher import (
@@ -720,6 +720,76 @@ def api_exchange_rates():
         rates = {r.from_currency: r.rate for r in db.execute(select(ExchangeRate)).scalars().all()}
         rates["CNY"] = 1.0
         return jsonify(rates)
+    finally:
+        db.close()
+
+
+@app.route("/api/realized-pnl")
+def api_realized_pnl():
+    """已兑现盈亏：基于交易记录统计每个标的的已实现盈亏（仅 SELL）。
+
+    含已清仓标的（quantity=0 仍计入），排除现金。CNY 按当前汇率换算（近似）。
+    """
+    db = get_session()
+    try:
+        rates = {r.from_currency: r.rate for r in db.execute(select(ExchangeRate)).scalars().all()}
+        rates["CNY"] = 1.0
+
+        holdings = db.execute(
+            select(Holding).where(Holding.asset_type != "cash")
+        ).scalars().all()
+
+        result_holdings = []
+        total_realized_cny = 0.0
+        year_totals: dict[int, float] = {}
+
+        for h in holdings:
+            realized_native, lots = compute_realized_pnl(db, h)
+            if not lots:
+                continue
+            fx = rates.get(h.currency, 1.0)
+            realized_cny = realized_native * fx
+            total_realized_cny += realized_cny
+
+            out_lots = []
+            for lot in lots:
+                lot_cny = lot["realized"] * fx
+                year = int(lot["date"][:4])
+                year_totals[year] = year_totals.get(year, 0.0) + lot_cny
+                out_lots.append({
+                    "date": lot["date"],
+                    "quantity": lot["quantity"],
+                    "sellPrice": round(lot["sell_price"], 4),
+                    "avgCost": round(lot["avg_cost"], 4),
+                    "fee": round(lot["fee"], 2),
+                    "proceedsNative": round(lot["proceeds"], 2),
+                    "costNative": round(lot["cost_basis"], 2),
+                    "realizedNative": round(lot["realized"], 2),
+                    "realizedCny": round(lot_cny, 2),
+                })
+
+            result_holdings.append({
+                "id": h.id,
+                "name": h.name,
+                "symbol": h.symbol,
+                "market": h.market,
+                "currency": h.currency,
+                "realizedNative": round(realized_native, 2),
+                "realizedCny": round(realized_cny, 2),
+                "sellCount": len(lots),
+                "lots": out_lots,
+            })
+
+        result_holdings.sort(key=lambda r: r["realizedCny"], reverse=True)
+        by_year = [
+            {"year": y, "realizedCny": round(v, 2)}
+            for y, v in sorted(year_totals.items(), reverse=True)
+        ]
+        return jsonify({
+            "totalRealizedCny": round(total_realized_cny, 2),
+            "holdings": result_holdings,
+            "byYear": by_year,
+        })
     finally:
         db.close()
 

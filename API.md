@@ -16,6 +16,7 @@
 - [手动设置价格](#6-手动设置价格)
 - [清除手动价格](#7-清除手动价格)
 - [获取图表数据](#8-获取图表数据)
+- [已兑现盈亏](#9-已兑现盈亏)
 
 ---
 
@@ -468,6 +469,70 @@ GET /api/portfolio-data
 
 ---
 
+## 9. 已兑现盈亏
+
+基于交易记录统计每个标的的已兑现（已实现）盈亏。仅 **SELL** 计入兑现，每笔卖出按其卖出时点的加权平均成本计价并扣除手续费；`TRANSFER_OUT` 仅减仓、不计入兑现。已清仓的标的（`quantity=0`）仍会出现，现金标的（`asset_type=cash`）排除。
+
+```
+GET /api/realized-pnl
+```
+
+**请求体：** 无
+
+**响应示例：**
+
+```json
+{
+  "totalRealizedCny": 12450.30,
+  "holdings": [
+    {
+      "id": 7,
+      "name": "Apple Inc.",
+      "symbol": "AAPL",
+      "market": "US",
+      "currency": "USD",
+      "realizedNative": 820.50,
+      "realizedCny": 5948.63,
+      "sellCount": 2,
+      "lots": [
+        {
+          "date": "2025-03-12",
+          "quantity": 10,
+          "sellPrice": 180.00,
+          "avgCost": 150.00,
+          "fee": 1.00,
+          "proceedsNative": 1799.00,
+          "costNative": 1500.00,
+          "realizedNative": 299.00,
+          "realizedCny": 2167.75
+        }
+      ]
+    }
+  ],
+  "byYear": [
+    { "year": 2025, "realizedCny": 12450.30 }
+  ]
+}
+```
+
+**响应字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `totalRealizedCny` | number | 全部标的累计已兑现盈亏（人民币，当前汇率换算） |
+| `holdings[]` | object[] | 各有卖出记录的标的，按 `realizedCny` 降序 |
+| `holdings[].realizedNative` | number | 该标的累计已兑现盈亏（标的原币种） |
+| `holdings[].realizedCny` | number | 同上，按当前汇率折人民币 |
+| `holdings[].sellCount` | number | 卖出笔数 |
+| `holdings[].lots[]` | object[] | 每笔卖出明细：卖价、当时均成本、手续费、实现金额（原币种 + CNY） |
+| `byYear[]` | object[] | 按卖出年份汇总的已兑现盈亏（人民币），年份降序 |
+
+**说明：**
+- 人民币金额按**当前**汇率换算（应用未存储历史汇率），属近似值；标的原币种金额为精确值
+- 加权平均成本口径与 `recalculate_holding` 一致
+
+---
+
 ## 错误格式
 
 所有 API 错误均返回以下结构：
@@ -504,6 +569,11 @@ curl -X POST http://localhost/api/clear-override \
 **curl — 获取图表数据：**
 ```bash
 curl http://localhost/api/portfolio-data
+```
+
+**curl — 获取已兑现盈亏：**
+```bash
+curl http://localhost/api/realized-pnl
 ```
 
 **JavaScript fetch — 刷新价格：**

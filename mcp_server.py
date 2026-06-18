@@ -34,7 +34,7 @@ from sqlalchemy import select
 
 from models import (
     init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate,
-    PriceHistory, PortfolioValueHistory, recalculate_holding,
+    PriceHistory, PortfolioValueHistory, recalculate_holding, compute_realized_pnl,
     find_paired_transaction, create_paired_transaction, apply_counterparty,
 )
 from price_fetcher import (
@@ -252,6 +252,70 @@ def get_portfolio_market(
             "holding_count": len(market_rows),
             "holdings": market_rows,
         }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_realized_pnl() -> str:
+    """
+    Get realized (locked-in) profit & loss computed from the transaction ledger.
+
+    Only SELL transactions count as realized; each is valued at the running
+    weighted-average cost at the time of sale, minus its fee. TRANSFER_OUT reduces
+    the position but is not treated as a realization. Closed positions (quantity=0)
+    are still included; cash holdings are excluded. Per-holding amounts are in the
+    holding's native currency; total_realized_cny and by_year use current FX rates
+    (approximation — historical FX is not stored).
+    """
+    try:
+        session = get_session()
+        try:
+            rates = {r.from_currency: r.rate for r in session.execute(select(ExchangeRate)).scalars().all()}
+            rates["CNY"] = 1.0
+            holdings = session.execute(
+                select(Holding).where(Holding.asset_type != "cash")
+            ).scalars().all()
+
+            result_holdings = []
+            total_realized_cny = 0.0
+            year_totals: dict[int, float] = {}
+
+            for h in holdings:
+                realized_native, lots = compute_realized_pnl(session, h)
+                if not lots:
+                    continue
+                fx = rates.get(h.currency, 1.0)
+                realized_cny = realized_native * fx
+                total_realized_cny += realized_cny
+                for lot in lots:
+                    year = int(lot["date"][:4])
+                    year_totals[year] = year_totals.get(year, 0.0) + lot["realized"] * fx
+                result_holdings.append({
+                    "id": h.id,
+                    "name": h.name,
+                    "symbol": h.symbol,
+                    "market": h.market,
+                    "currency": h.currency,
+                    "realized_native": round(realized_native, 2),
+                    "realized_cny": round(realized_cny, 2),
+                    "sell_count": len(lots),
+                    "lots": lots,
+                })
+
+            result_holdings.sort(key=lambda r: r["realized_cny"], reverse=True)
+            by_year = [
+                {"year": y, "realized_cny": round(v, 2)}
+                for y, v in sorted(year_totals.items(), reverse=True)
+            ]
+            return json.dumps({
+                "total_realized_cny": round(total_realized_cny, 2),
+                "holding_count": len(result_holdings),
+                "by_year": by_year,
+                "holdings": result_holdings,
+            }, ensure_ascii=False, indent=2)
+        finally:
+            session.close()
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 

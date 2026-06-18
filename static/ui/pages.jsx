@@ -483,6 +483,164 @@ window.RangeTabs = RangeTabs;
 // =============================================================
 // Transactions page
 // =============================================================
+// =============================================================
+// Realized P&L (已兑现盈亏)
+// =============================================================
+function RealizedPnlPage() {
+  const mobile = window.useIsMobile ? window.useIsMobile() : false;
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [expanded, setExpanded] = useState({});
+
+  useEffect(() => {
+    setLoading(true);
+    fetch("/api/realized-pnl")
+      .then(r => r.ok ? r.json() : r.json().then(d => { throw new Error(d.error || "加载失败"); }))
+      .then(d => { setData(d); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, []);
+
+  const total = data?.totalRealizedCny ?? 0;
+  const holdings = data?.holdings ?? [];
+  const byYear = data?.byYear ?? [];
+  const sellCount = holdings.reduce((s, h) => s + (h.sellCount || 0), 0);
+  const thisYear = new Date().getFullYear();
+  const thisYearRealized = byYear.find(y => y.year === thisYear)?.realizedCny ?? 0;
+
+  const toggle = (id) => setExpanded(e => ({ ...e, [id]: !e[id] }));
+  const col = (v) => (v >= 0 ? "up" : "down");
+
+  return (
+    <PageWrap max={1100}>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: "var(--fs-xl)", fontWeight: 600 }}>已兑现盈亏</h2>
+        <div className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.08em", marginTop: 2 }}>REALIZED P&amp;L · 基于卖出交易 · CNY 按当前汇率换算</div>
+      </div>
+
+      {loading && (
+        <div style={{ padding: 40, textAlign: "center", color: "var(--fg-3)", fontFamily: "var(--font-mono)", fontSize: 12 }}>加载中…</div>
+      )}
+      {!loading && error && (
+        <div style={{ padding: 40, textAlign: "center", color: "var(--down)", fontSize: 13 }}>加载失败：{error}</div>
+      )}
+      {!loading && !error && holdings.length === 0 && (
+        <div style={{ padding: 40, textAlign: "center", color: "var(--fg-3)", fontSize: 13 }}>暂无已兑现盈亏 —— 还没有卖出交易记录。</div>
+      )}
+
+      {!loading && !error && holdings.length > 0 && (
+        <>
+          {/* Summary chips */}
+          <div style={{
+            display: "grid", gridTemplateColumns: mobile ? "repeat(3, minmax(0, 1fr))" : "repeat(3, 1fr)",
+            background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r-3)",
+            marginBottom: 16, overflow: "hidden",
+          }}>
+            <BMetric label="累计已兑现 · CNY" value={fmt.signed(total, 0)} color={col(total)} />
+            <BMetric label="今年已兑现 · CNY" value={fmt.signed(thisYearRealized, 0)} sub={String(thisYear)} color={col(thisYearRealized)} />
+            <BMetric label="卖出笔数" value={fmt.qty(sellCount)} sub={holdings.length + " 个标的"} />
+          </div>
+
+          {/* By year */}
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="card-head">
+              <span className="title"><span className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.1em" }}>BY YEAR</span> <span style={{ marginLeft: 8 }}>按年份</span></span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, padding: 14 }}>
+              {byYear.map(y => (
+                <div key={y.year} style={{
+                  flex: mobile ? "1 1 40%" : "0 0 auto", minWidth: 120,
+                  border: "1px solid var(--border)", borderRadius: "var(--r-2)", padding: "10px 14px",
+                }}>
+                  <div className="mono" style={{ fontSize: 11, color: "var(--fg-3)" }}>{y.year}</div>
+                  <div className="num" style={{ fontSize: "var(--fs-md)", fontWeight: 600, color: y.realizedCny >= 0 ? "var(--up)" : "var(--down)" }}>
+                    {fmt.signed(y.realizedCny, 0)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Per-holding table */}
+          <div className="card">
+            <div className="card-head">
+              <span className="title"><span className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.1em" }}>BY HOLDING</span> <span style={{ marginLeft: 8 }}>{holdings.length} 个标的</span></span>
+            </div>
+            <div className="table-scroll">
+              <table className="dtable">
+                <thead>
+                  <tr>
+                    <th>标的</th>
+                    <th>市场</th>
+                    <th className="num">已兑现（原币种）</th>
+                    <th className="num">已兑现（CNY）</th>
+                    <th className="num">卖出</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {holdings.map(h => {
+                    const open = !!expanded[h.id];
+                    return (
+                      <React.Fragment key={h.id}>
+                        <tr style={{ cursor: "pointer" }} onClick={() => toggle(h.id)}>
+                          <td>
+                            <div style={{ fontWeight: 500 }}>{h.symbol}</div>
+                            <div style={{ fontSize: 10, color: "var(--fg-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 180 }}>{h.name}</div>
+                          </td>
+                          <td><span className="chip" style={{ background: "var(--surface-2)", color: "var(--fg-2)" }}>{MARKET_LABEL[h.market] || h.market}</span></td>
+                          <td className="num" style={{ color: h.realizedNative >= 0 ? "var(--up)" : "var(--down)" }}>{fmt.signed(h.realizedNative, 2)} <span style={{ color: "var(--fg-3)", fontSize: 10 }}>{h.currency}</span></td>
+                          <td className="num" style={{ fontWeight: 600, color: h.realizedCny >= 0 ? "var(--up)" : "var(--down)" }}>{fmt.signed(h.realizedCny, 2)}</td>
+                          <td className="num">{h.sellCount}</td>
+                          <td className="num" style={{ color: "var(--fg-3)", fontSize: 11 }}>{open ? "▾" : "▸"}</td>
+                        </tr>
+                        {open && (
+                          <tr>
+                            <td colSpan={6} style={{ padding: 0, background: "var(--surface-2)" }}>
+                              <div style={{ padding: mobile ? 8 : "8px 16px", overflowX: "auto" }}>
+                                <table className="dtable" style={{ margin: 0 }}>
+                                  <thead>
+                                    <tr>
+                                      <th>日期</th>
+                                      <th className="num">数量</th>
+                                      <th className="num">卖价</th>
+                                      <th className="num">当时均成本</th>
+                                      <th className="num">手续费</th>
+                                      <th className="num">实现（{h.currency}）</th>
+                                      <th className="num">实现（CNY）</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {h.lots.map((lot, i) => (
+                                      <tr key={i}>
+                                        <td className="mono" style={{ fontSize: 11 }}>{lot.date}</td>
+                                        <td className="num">{fmt.qty(lot.quantity)}</td>
+                                        <td className="num">{fmt.num(lot.sellPrice, 2)}</td>
+                                        <td className="num" style={{ color: "var(--fg-2)" }}>{fmt.num(lot.avgCost, 2)}</td>
+                                        <td className="num" style={{ color: lot.fee > 0 ? "var(--fg-1)" : "var(--fg-3)" }}>{lot.fee > 0 ? fmt.num(lot.fee, 2) : "—"}</td>
+                                        <td className="num" style={{ color: lot.realizedNative >= 0 ? "var(--up)" : "var(--down)" }}>{fmt.signed(lot.realizedNative, 2)}</td>
+                                        <td className="num" style={{ color: lot.realizedCny >= 0 ? "var(--up)" : "var(--down)" }}>{fmt.signed(lot.realizedCny, 2)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </PageWrap>
+  );
+}
+
 function TransactionsPage({ params }) {
   const mobile = window.useIsMobile ? window.useIsMobile() : false;
   const initId = params?.holdingId ?? HOLDINGS[0]?.id ?? null;

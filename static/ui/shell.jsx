@@ -56,6 +56,7 @@ function Navbar({ variant, dataVersion, theme, onToggleTheme }) {
     { id: "holdings",     label: "持仓列表" },
     { id: "trends",       label: "趋势分析" },
     { id: "transactions", label: "交易记录" },
+    { id: "realized",     label: "已兑现盈亏" },
     { id: "add",          label: "+ 添加持仓" },
   ];
   return (

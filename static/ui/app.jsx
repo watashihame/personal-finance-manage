@@ -16,6 +16,7 @@ function VariantApp({ variant, dataVersion, theme, onToggleTheme }) {
   else if (page === "holdings")     content = <HoldingsPage />;
   else if (page === "trends")       content = <TrendsPage />;
   else if (page === "transactions") content = <TransactionsPage params={params} />;
+  else if (page === "realized")     content = <RealizedPnlPage />;
   else if (page === "add")          content = <AddHoldingPage />;
   else content = <Dashboard />;
 

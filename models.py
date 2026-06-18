@@ -123,6 +123,56 @@ def recalculate_holding(session, h) -> None:
         h.cost_price = total_cost / total_qty
 
 
+def compute_realized_pnl(session, h) -> "tuple[float, list[dict]]":
+    """回放某 holding 的全部交易，统计已兑现盈亏（已实现，原币种）。
+
+    复用与 recalculate_holding 一致的加权平均成本游标：BUY/TRANSFER_IN 累加成本与数量，
+    SELL/TRANSFER_OUT 按比例减仓。仅 SELL 计入已兑现盈亏（TRANSFER_OUT 视为划转，不算变现，
+    但仍按比例减仓以保证后续 SELL 的当时均成本正确）。
+
+    返回 (realized_total_native, lots)。lots 每项对应一笔 SELL，金额均为标的原币种：
+      {date, quantity, sell_price, avg_cost, fee, proceeds, cost_basis, realized}
+    """
+    from sqlalchemy import select as sa_select
+    txs = session.execute(
+        sa_select(Transaction)
+        .where(Transaction.holding_id == h.id)
+        .order_by(Transaction.tx_date, Transaction.id)
+    ).scalars().all()
+
+    total_qty = 0.0
+    total_cost = 0.0
+    realized_total = 0.0
+    lots: list[dict] = []
+    for tx in txs:
+        if tx.tx_type in ("BUY", "TRANSFER_IN"):
+            total_cost += tx.quantity * tx.unit_price + (tx.fee or 0.0)
+            total_qty += tx.quantity
+        elif tx.tx_type in ("SELL", "TRANSFER_OUT"):
+            avg = total_cost / total_qty if total_qty > 0 else 0.0
+            if tx.tx_type == "SELL":
+                fee = tx.fee or 0.0
+                proceeds = tx.quantity * tx.unit_price - fee
+                cost_basis = tx.quantity * avg
+                realized = proceeds - cost_basis
+                realized_total += realized
+                lots.append({
+                    "date": tx.tx_date.isoformat(),
+                    "quantity": tx.quantity,
+                    "sell_price": tx.unit_price,
+                    "avg_cost": avg,
+                    "fee": fee,
+                    "proceeds": proceeds,
+                    "cost_basis": cost_basis,
+                    "realized": realized,
+                })
+            if total_qty > 0:
+                total_cost -= total_cost * (tx.quantity / total_qty)
+            total_qty -= tx.quantity
+
+    return realized_total, lots
+
+
 # ----------------------------------------------------------------------------
 # 配对交易（counterparty）共享逻辑 —— app.py 和 mcp_server.py 都使用
 # ----------------------------------------------------------------------------
