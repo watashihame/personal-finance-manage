@@ -32,9 +32,25 @@ function Router({ children, initial = "dashboard" }) {
 }
 const useRoute = () => useContext(RouteCtx);
 
+function useIsMobile(breakpoint = 760) {
+  const query = `(max-width: ${breakpoint}px)`;
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = e => setMatches(e.matches);
+    setMatches(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [query]);
+
+  return matches;
+}
+
 // ---- Top navbar ----
 function Navbar({ variant, dataVersion, theme, onToggleTheme }) {
   const { page, navigate } = useRoute();
+  const mobile = useIsMobile();
   const items = [
     { id: "dashboard",    label: "仪表盘" },
     { id: "holdings",     label: "持仓列表" },
@@ -46,9 +62,10 @@ function Navbar({ variant, dataVersion, theme, onToggleTheme }) {
     <header style={{
       display: "flex",
       alignItems: "center",
-      gap: 24,
-      padding: "0 24px",
-      height: 52,
+      flexWrap: mobile ? "wrap" : "nowrap",
+      gap: mobile ? 10 : 24,
+      padding: mobile ? "10px 12px" : "0 24px",
+      minHeight: mobile ? 0 : 52,
       background: "var(--surface)",
       borderBottom: "1px solid var(--border)",
       position: "sticky",
@@ -62,7 +79,15 @@ function Navbar({ variant, dataVersion, theme, onToggleTheme }) {
           <span className="mono" style={{ fontSize: 9, color: "var(--fg-3)", letterSpacing: "0.1em", textTransform: "uppercase" }}>portfolio · v{variant}</span>
         </div>
       </div>
-      <nav style={{ display: "flex", gap: 2 }}>
+      <nav style={{
+        display: "flex",
+        gap: 2,
+        order: mobile ? 3 : 0,
+        width: mobile ? "100%" : "auto",
+        overflowX: mobile ? "auto" : "visible",
+        paddingBottom: mobile ? 2 : 0,
+        WebkitOverflowScrolling: "touch",
+      }}>
         {items.map(it => (
           <button
             key={it.id}
@@ -72,12 +97,13 @@ function Navbar({ variant, dataVersion, theme, onToggleTheme }) {
               background: "transparent",
               color: page === it.id ? "var(--fg)" : "var(--fg-2)",
               fontSize: "var(--fs-sm)",
-              padding: "6px 10px",
+              padding: mobile ? "7px 10px" : "6px 10px",
               cursor: "pointer",
               borderRadius: "var(--r-2)",
               fontWeight: page === it.id ? 500 : 400,
               position: "relative",
               transition: "color var(--transition-fast)",
+              whiteSpace: "nowrap",
             }}
             onMouseEnter={e => e.currentTarget.style.color = "var(--fg)"}
             onMouseLeave={e => e.currentTarget.style.color = page === it.id ? "var(--fg)" : "var(--fg-2)"}
@@ -85,15 +111,15 @@ function Navbar({ variant, dataVersion, theme, onToggleTheme }) {
             {it.label}
             {page === it.id && (
               <span style={{
-                position: "absolute", left: 10, right: 10, bottom: -14, height: 2,
+                position: "absolute", left: 10, right: 10, bottom: mobile ? -3 : -14, height: 2,
                 background: "var(--fg)", borderRadius: 1,
               }} />
             )}
           </button>
         ))}
       </nav>
-      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-        <span className="mono" style={{ fontSize: 11, color: "var(--fg-3)" }}>
+      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: mobile ? 8 : 12 }}>
+        <span className="mono" style={{ display: mobile ? "none" : "inline", fontSize: 11, color: "var(--fg-3)" }}>
           USD/CNY <span style={{ color: "var(--fg-1)" }}>{FX.USD.toFixed(3)}</span>
           <span style={{ margin: "0 8px", opacity: 0.4 }}>·</span>
           JPY/CNY <span style={{ color: "var(--fg-1)" }}>{FX.JPY.toFixed(4)}</span>
@@ -122,6 +148,9 @@ function BrandMark() {
 
 // ---- Status bar (bottom) ----
 function StatusBar({ variant }) {
+  const mobile = useIsMobile();
+  if (mobile) return null;
+
   const root = document.documentElement;
   const theme = root.getAttribute("data-theme") || "light";
   const pnl = root.getAttribute("data-pnl") || "red-up";
@@ -265,4 +294,4 @@ function RefreshButton() {
   );
 }
 
-Object.assign(window, { ThemeProvider, useTheme, Router, useRoute, Navbar, StatusBar, BrandMark, RefreshButton, ThemeToggle });
+Object.assign(window, { ThemeProvider, useTheme, Router, useRoute, useIsMobile, Navbar, StatusBar, BrandMark, RefreshButton, ThemeToggle });

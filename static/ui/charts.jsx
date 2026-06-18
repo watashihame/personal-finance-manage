@@ -69,13 +69,18 @@ function LineChart({ data, height = 240, accent = "var(--fg)", showAxis = true, 
   // Hover state
   const [hover, setHover] = useState(null);
   const [hoverMarker, setHoverMarker] = useState(null);
+  // Delay hiding the marker tooltip so the pointer can travel onto it to scroll.
+  const hideTimer = useRef(null);
+  const cancelHide = () => { if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; } };
+  const scheduleHideMarker = () => { cancelHide(); hideTimer.current = setTimeout(() => setHoverMarker(null), 150); };
+  const showMarker = idx => { cancelHide(); setHoverMarker(idx); };
   const onMove = e => {
     const r = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - r.left;
     const idx = Math.max(0, Math.min(data.length - 1, Math.round((x - padL) / dx)));
     setHover(idx);
   };
-  const onLeave = () => { setHover(null); setHoverMarker(null); };
+  const onLeave = () => { setHover(null); scheduleHideMarker(); };
 
   // Map markers to data positions, then group transactions that fall on the same data point
   const dateIdx = {};
@@ -148,8 +153,8 @@ function LineChart({ data, height = 240, accent = "var(--fg)", showAxis = true, 
           const glyph = isBuy ? "B" : isSell ? "S" : "•";
           return (
             <g key={idx} style={{ cursor: "pointer" }}
-               onMouseEnter={() => setHoverMarker(idx)}
-               onMouseLeave={() => setHoverMarker(null)}>
+               onMouseEnter={() => showMarker(idx)}
+               onMouseLeave={scheduleHideMarker}>
               {isActive && <circle cx={x} cy={y} r={r + 4} fill={color} opacity="0.18" />}
               <circle cx={x} cy={y} r={r} fill="var(--bg)" stroke={color} strokeWidth="1.5" />
               <text x={x} y={y + 2.5} textAnchor="middle" fontSize="7" fontWeight="700" fill={color} fontFamily="var(--font-mono)" pointerEvents="none">{glyph}</text>
@@ -189,27 +194,47 @@ function LineChart({ data, height = 240, accent = "var(--fg)", showAxis = true, 
         if (!grp) return null;
         const tipW = 252;
         const left = Math.min(Math.max(grp.x - tipW / 2, 4), W - tipW - 4);
-        const estH = 30 + grp.txs.length * 36;
-        const top = grp.y + 14 + estH > H ? Math.max(grp.y - 14 - estH, 4) : grp.y + 14;
+        const estH = 38 + grp.txs.length * 36;
+        const margin = 8;
+        const rect = ref.current ? ref.current.getBoundingClientRect() : null;
+        const vh = (typeof window !== "undefined" && window.innerHeight) || 720;
+        // Cap to the viewport; the bucket may hold more transactions than fit, so the list scrolls.
+        const maxH = Math.max(120, Math.min(estH, vh - margin * 2));
+        let top;
+        if (rect) {
+          let vpTop = rect.top + grp.y + 14;
+          if (vpTop + maxH > vh - margin) vpTop = vh - margin - maxH;
+          if (vpTop < margin) vpTop = margin;
+          top = vpTop - rect.top;
+        } else {
+          top = grp.y + 14 + maxH > H ? Math.max(grp.y - 14 - maxH, 4) : grp.y + 14;
+        }
         const curSym = (c) => c === "USD" ? "$" : c === "JPY" ? "¥" : "¥";
         return (
-          <div style={{
-            position: "absolute",
-            left, top,
-            width: tipW,
-            background: "var(--surface)",
-            border: "1px solid var(--border-strong)",
-            borderRadius: "var(--r-2)",
-            padding: "10px 12px",
-            fontSize: "var(--fs-xs)",
-            pointerEvents: "none",
-            boxShadow: "var(--shadow-2)",
-            zIndex: 5,
-          }}>
-            <div style={{ color: "var(--fg-3)", fontSize: 10, fontFamily: "var(--font-mono)", marginBottom: 8, display: "flex", justifyContent: "space-between", paddingBottom: 6, borderBottom: "1px solid var(--border)" }}>
+          <div
+            onMouseEnter={() => showMarker(grp.idx)}
+            onMouseLeave={scheduleHideMarker}
+            style={{
+              position: "absolute",
+              left, top,
+              width: tipW,
+              maxHeight: maxH,
+              display: "flex",
+              flexDirection: "column",
+              background: "var(--surface)",
+              border: "1px solid var(--border-strong)",
+              borderRadius: "var(--r-2)",
+              padding: "10px 12px",
+              fontSize: "var(--fs-xs)",
+              pointerEvents: "auto",
+              boxShadow: "var(--shadow-2)",
+              zIndex: 5,
+            }}>
+            <div style={{ color: "var(--fg-3)", fontSize: 10, fontFamily: "var(--font-mono)", marginBottom: 8, display: "flex", justifyContent: "space-between", paddingBottom: 6, borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
               <span>{grp.txs[0].date}</span>
               <span>组合净值 ¥{fmtY(data[hoverMarker].value)}</span>
             </div>
+            <div style={{ overflowY: "auto", overflowX: "hidden", margin: "0 -4px", padding: "0 4px" }}>
             {grp.txs.map((t, i) => {
               const isBuy = t.type === "买入";
               const color = isBuy ? "var(--up)" : "var(--down)";
@@ -236,6 +261,7 @@ function LineChart({ data, height = 240, accent = "var(--fg)", showAxis = true, 
                 </div>
               );
             })}
+            </div>
           </div>
         );
       })()}

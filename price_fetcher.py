@@ -1,14 +1,20 @@
+"""Price-refresh orchestration: FX rates, the per-market provider dispatch, the
+price cache / history upserts, manual overrides, and portfolio-value snapshots.
+
+The actual data-source fetchers and their per-market priority chains live in
+:mod:`price_providers`; this module walks those chains, persists the results, and
+falls back to the last cached price when every source for a symbol is down.
+"""
+
 import logging
-import os
-import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 
 import requests
-import yfinance as yf
 from sqlalchemy import select
 
 from models import PriceCache, ExchangeRate, Transaction, Holding, PriceHistory, get_session
+from price_providers import MARKETS, classify_market, classify_bucket, fetch_bucket
 
 logger = logging.getLogger(__name__)
 
@@ -20,55 +26,6 @@ CHART_COLORS = [
     "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
     "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ac",
 ]
-
-
-def _load_tushare_token() -> str | None:
-    token = os.environ.get("TUSHARE_TOKEN", "").strip()
-    if not token or token == "your_tushare_token_here":
-        return None
-    return token
-
-
-def _is_ashare(symbol: str) -> bool:
-    return symbol.upper().endswith(".SH") or symbol.upper().endswith(".SZ")
-
-
-def _is_japanese(symbol: str) -> bool:
-    return symbol.upper().endswith(".T")
-
-
-def _is_crypto(symbol: str) -> bool:
-    return "-USD" in symbol.upper() or "-USDT" in symbol.upper()
-
-
-def _is_cn_fund(symbol: str) -> bool:
-    """六位数字（含或不含 .OF 后缀）= A 股开放式基金"""
-    return bool(re.match(r'^\d{6}(\.OF)?$', symbol, re.IGNORECASE))
-
-
-ICBC_GOLD_URL = "https://mybank.icbc.com.cn/icbc/newperbank/perbank3/gold/goldaccrual_query_out.jsp"
-ICBC_GOLD_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://mybank.icbc.com.cn/",
-}
-
-
-def _is_icbc_gold(symbol: str) -> bool:
-    return symbol.upper() == "ICBC-GOLD"
-
-
-MARKETS = ("all", "cn", "us", "jp", "crypto")
-
-
-def _classify_market(symbol: str) -> str:
-    """A股/场外基金/ICBC黄金归为 cn；其余按 yfinance 后缀拆分。"""
-    if _is_ashare(symbol) or _is_cn_fund(symbol) or _is_icbc_gold(symbol):
-        return "cn"
-    if _is_japanese(symbol):
-        return "jp"
-    if _is_crypto(symbol):
-        return "crypto"
-    return "us"
 
 
 # ---------------------------------------------------------------------------
@@ -138,181 +95,7 @@ def fetch_exchange_rates() -> dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
-# A-share prices via Tushare
-# ---------------------------------------------------------------------------
-
-def _fetch_tushare(symbols: list[str]) -> dict[str, float | None]:
-    token = _load_tushare_token()
-    if not token:
-        logger.warning("Tushare token not configured")
-        return {s: None for s in symbols}
-
-    try:
-        import tushare as ts
-        pro = ts.pro_api(token)
-
-        results: dict[str, float | None] = {}
-        # Tushare daily() can accept comma-separated ts_codes
-        ts_codes = ",".join(symbols)
-        df = pro.daily(ts_code=ts_codes, limit=len(symbols))
-        if df is None or df.empty:
-            return {s: None for s in symbols}
-
-        # Keep only the most recent row per symbol
-        df = df.sort_values("trade_date", ascending=False)
-        df = df.drop_duplicates(subset="ts_code", keep="first")
-        price_map = dict(zip(df["ts_code"], df["close"]))
-
-        for sym in symbols:
-            results[sym] = float(price_map[sym]) if sym in price_map else None
-        return results
-
-    except Exception as exc:
-        logger.error("Tushare fetch failed: %s", exc)
-        return {s: None for s in symbols}
-
-
-def _fetch_tushare_us(symbols: list[str]) -> dict[str, float | None]:
-    """美股 T-1 收盘价回退。仅在 yfinance 拿不到价格时调用。"""
-    token = _load_tushare_token()
-    if not token:
-        return {s: None for s in symbols}
-
-    try:
-        import tushare as ts
-        pro = ts.pro_api(token)
-        ts_codes = ",".join(symbols)
-        df = pro.us_daily(ts_code=ts_codes, limit=len(symbols))
-        if df is None or df.empty:
-            return {s: None for s in symbols}
-        df = df.sort_values("trade_date", ascending=False)
-        df = df.drop_duplicates(subset="ts_code", keep="first")
-        price_map = dict(zip(df["ts_code"], df["close"]))
-        return {sym: float(price_map[sym]) if sym in price_map else None for sym in symbols}
-    except Exception as exc:
-        logger.error("Tushare us_daily fetch failed: %s", exc)
-        return {s: None for s in symbols}
-
-
-# ---------------------------------------------------------------------------
-# CN open-end fund NAV via 天天基金网 (eastmoney) — free, no token required
-# ---------------------------------------------------------------------------
-
-_EASTMONEY_HEADERS = {"Referer": "https://fundf10.eastmoney.com/"}
-_EASTMONEY_URL = "https://api.fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex=1&pageSize=1"
-
-
-def _fetch_one_eastmoney(sym: str) -> tuple[str, float | None]:
-    code = re.sub(r'\.OF$', '', sym, flags=re.IGNORECASE)
-    for attempt in range(2):
-        try:
-            resp = requests.get(
-                _EASTMONEY_URL.format(code=code),
-                headers=_EASTMONEY_HEADERS,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            lst = resp.json().get("Data", {}).get("LSJZList", [])
-            return sym, float(lst[0]["DWJZ"]) if lst else None
-        except Exception as exc:
-            if attempt == 1:
-                logger.warning("eastmoney fund_nav failed for %s: %s", sym, exc)
-    return sym, None
-
-
-def _fetch_eastmoney_fund(symbols: list[str]) -> dict[str, float | None]:
-    """Fetch unit NAV (单位净值) from eastmoney concurrently for each fund symbol."""
-    results: dict[str, float | None] = {}
-    with ThreadPoolExecutor(max_workers=min(len(symbols), 8)) as pool:
-        futures = {pool.submit(_fetch_one_eastmoney, sym): sym for sym in symbols}
-        for future in as_completed(futures):
-            sym, price = future.result()
-            results[sym] = price
-    return results
-
-
-# ---------------------------------------------------------------------------
-# ICBC gold accumulation (工银积存金) price scraper
-# ---------------------------------------------------------------------------
-
-class _LegacySSLAdapter(requests.adapters.HTTPAdapter):
-    """Allow legacy TLS renegotiation for older bank servers (e.g., ICBC)."""
-    def init_poolmanager(self, *args, **kwargs):
-        import ssl
-        ctx = ssl.create_default_context()
-        ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
-        kwargs["ssl_context"] = ctx
-        super().init_poolmanager(*args, **kwargs)
-
-
-def _fetch_icbc_gold(symbols: list[str]) -> dict[str, float | None]:
-    """从工行积存金页面抓取实时主动积存价格（CNY/克）。
-
-    页面 HTML 中含有 id="activeprice_<prodcode>" 的 <td>，初始值即为实时价格。
-    """
-    try:
-        from bs4 import BeautifulSoup
-        session = requests.Session()
-        session.mount("https://", _LegacySSLAdapter())
-        resp = session.get(ICBC_GOLD_URL, headers=ICBC_GOLD_HEADERS, timeout=30)
-        resp.raise_for_status()
-        resp.encoding = "gbk"
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # 策略1：id="activeprice_<prodcode>" 即实时主动积存价格
-        price = None
-        tag = soup.find(id=re.compile(r'^activeprice_'))
-        if tag:
-            candidate = float(tag.get_text(strip=True))
-            if 300 < candidate < 3000:
-                price = candidate
-
-        # 策略2：全文正则回退 — id="activeprice_..." 后跟数字
-        if price is None:
-            m = re.search(r'id="activeprice_[^"]*"[^>]*>(\d{3,4}\.\d{2})', resp.text)
-            if m:
-                candidate = float(m.group(1))
-                if 300 < candidate < 3000:
-                    price = candidate
-
-        if price is None:
-            logger.warning("ICBC gold: 未找到 activeprice 字段")
-        else:
-            logger.info("ICBC gold price fetched: %.2f CNY/g", price)
-
-        return {sym: price for sym in symbols}
-    except Exception as exc:
-        logger.error("ICBC gold fetch failed: %s", exc)
-        return {sym: None for sym in symbols}
-
-
-# ---------------------------------------------------------------------------
-# US / JP / Crypto prices via yfinance
-# ---------------------------------------------------------------------------
-
-def _fetch_one_yfinance(sym: str) -> tuple[str, float | None]:
-    try:
-        price = yf.Ticker(sym).fast_info.last_price
-        return sym, float(price) if price is not None else None
-    except Exception as exc:
-        logger.warning("yfinance failed for %s: %s", sym, exc)
-        return sym, None
-
-
-def _fetch_yfinance(symbols: list[str]) -> dict[str, float | None]:
-    if not symbols:
-        return {}
-    results: dict[str, float | None] = {}
-    with ThreadPoolExecutor(max_workers=min(len(symbols), 8)) as pool:
-        futures = {pool.submit(_fetch_one_yfinance, sym): sym for sym in symbols}
-        for future in as_completed(futures):
-            sym, price = future.result()
-            results[sym] = price
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Cache upsert
+# Cache / history upsert
 # ---------------------------------------------------------------------------
 
 def compute_quantity_at_date(session, holding_id: int, target_date) -> float:
@@ -353,7 +136,6 @@ def _upsert_portfolio_value_history(session, date, scope: str, scope_type: str, 
 
 
 def _upsert_history(session, symbol: str, price: float, currency: str, source: str):
-    from models import PriceHistory
     today = datetime.now(timezone.utc).date()
     existing = session.execute(
         select(PriceHistory).where(PriceHistory.symbol == symbol, PriceHistory.date == today)
@@ -394,100 +176,75 @@ def _upsert_cache(session, symbol: str, price: float, currency: str, source: str
 
 def refresh_all_prices(holdings, rates: dict | None = None, market: str = "all") -> dict:
     """
-    Fetch prices for all holdings. Skip symbols with is_manual=True.
+    Fetch prices for all holdings via per-market provider chains. Skip symbols
+    with is_manual=True.
+
     market: "all" | "cn" | "us" | "jp" | "crypto"
         - "cn" 含 A股 / 场外基金 / ICBC 黄金
-        - "us" / "jp" / "crypto" 走 yfinance，按 symbol 后缀区分
+        - 每个市场按优先级走多源回退链（见 price_providers.CHAINS），逐 symbol 回退
+        - 某 symbol 所有实时源都失败时，估值沿用 price_cache 里的上次价格（不写
+          price_history、不刷新缓存时间戳），避免持仓估值缺失
         - 非 "all" 时只更新被选中市场的 price_cache / price_history，
           不写当日的 portfolio_value_history 快照（避免半截数据覆盖完整快照）
-    Returns {"updated": n, "failed": n, "errors": [...], "timestamp": str, "market": str}
+    Returns {"updated": n, "failed": n, "stale": n, "errors": [...], "timestamp": str, "market": str}
     """
     if market not in MARKETS:
         raise ValueError(f"unknown market {market!r}, expected one of {MARKETS}")
     session = get_session()
     try:
-        # Find which symbols have manual override
-        manual_symbols: set[str] = set()
         cache_rows = session.execute(select(PriceCache)).scalars().all()
-        for row in cache_rows:
-            if row.is_manual:
-                manual_symbols.add(row.symbol)
+        cache_by_symbol = {row.symbol: row for row in cache_rows}
+        manual_symbols = {row.symbol for row in cache_rows if row.is_manual}
 
         symbols_to_fetch = [
             h.symbol for h in holdings
             if h.symbol not in manual_symbols
             and h.asset_type != "cash"
             and h.quantity > 1e-6
-            and (market == "all" or _classify_market(h.symbol) == market)
+            and (market == "all" or classify_market(h.symbol) == market)
         ]
 
-        fund_syms      = [s for s in symbols_to_fetch if _is_cn_fund(s)]
-        ashare_syms    = [s for s in symbols_to_fetch if _is_ashare(s)]
-        icbc_gold_syms = [s for s in symbols_to_fetch if _is_icbc_gold(s)]
-        other_syms     = [s for s in symbols_to_fetch if
-                          not _is_ashare(s) and not _is_cn_fund(s) and not _is_icbc_gold(s)]
+        # 按 bucket 分组，每个 bucket 的回退链并行执行
+        buckets: dict[str, list[str]] = {}
+        for sym in symbols_to_fetch:
+            buckets.setdefault(classify_bucket(sym), []).append(sym)
 
-        fetch_tasks: list[tuple[str, callable, list[str]]] = []
-        if fund_syms:
-            fetch_tasks.append(("eastmoney", _fetch_eastmoney_fund, fund_syms))
-        if ashare_syms:
-            fetch_tasks.append(("tushare", _fetch_tushare, ashare_syms))
-        if icbc_gold_syms:
-            fetch_tasks.append(("icbc", _fetch_icbc_gold, icbc_gold_syms))
-        if other_syms:
-            fetch_tasks.append(("yfinance", _fetch_yfinance, other_syms))
-
-        all_results: dict[str, float | None] = {}
-        if fetch_tasks:
-            with ThreadPoolExecutor(max_workers=len(fetch_tasks)) as pool:
-                futures = {pool.submit(fn, syms): name for name, fn, syms in fetch_tasks}
+        resolved: dict[str, tuple[float | None, str | None]] = {}
+        if buckets:
+            with ThreadPoolExecutor(max_workers=len(buckets)) as pool:
+                futures = {pool.submit(fetch_bucket, b, syms): b for b, syms in buckets.items()}
                 for future in as_completed(futures):
-                    name = futures[future]
+                    b = futures[future]
                     try:
-                        all_results.update(future.result())
+                        resolved.update(future.result())
                     except Exception as exc:
-                        logger.error("price source %s failed: %s", name, exc)
+                        logger.error("price bucket %s failed: %s", b, exc)
 
-        # 美股回退：yfinance 拿不到价格的 US 标的，用 Tushare us_daily (T-1) 兑底。
-        us_fallback_syms: set[str] = set()
-        us_failed = [
-            s for s in other_syms
-            if all_results.get(s) is None and not _is_japanese(s) and not _is_crypto(s)
-        ]
-        if us_failed:
-            fallback = _fetch_tushare_us(us_failed)
-            for sym, price in fallback.items():
-                if price is not None:
-                    all_results[sym] = price
-                    us_fallback_syms.add(sym)
-
-        # Determine currency per symbol
         holding_map = {h.symbol: h for h in holdings}
-
         updated = 0
         failed = 0
-        errors = []
+        stale = 0
+        errors: list[str] = []
+        snapshot_prices: dict[str, float] = {}  # symbol -> price used for value snapshot
 
-        for sym, price in all_results.items():
-            if price is None:
+        for sym, (price, source) in resolved.items():
+            if price is not None:
+                h = holding_map.get(sym)
+                currency = h.currency if h else "CNY"
+                _upsert_cache(session, sym, price, currency, source or "auto")
+                _upsert_history(session, sym, price, currency, source or "auto")
+                snapshot_prices[sym] = price
+                updated += 1
+                continue
+            cached = cache_by_symbol.get(sym)
+            if cached is not None and cached.price is not None:
+                # 实时源全部失败：估值沿用上次缓存价，缓存本身保持不动
+                snapshot_prices[sym] = cached.price
+                stale += 1
+                errors.append(f"{sym}: 实时源不可用，估值沿用缓存价")
+            else:
                 failed += 1
                 errors.append(f"{sym}: 获取失败")
-                continue
-            h = holding_map.get(sym)
-            currency = h.currency if h else "CNY"
-            if _is_cn_fund(sym):
-                source = "eastmoney"
-            elif _is_ashare(sym):
-                source = "tushare"
-            elif _is_icbc_gold(sym):
-                source = "icbc"
-            elif sym in us_fallback_syms:
-                source = "tushare-us"
-            else:
-                source = "yfinance"
-            _upsert_cache(session, sym, price, currency, source)
-            _upsert_history(session, sym, price, currency, source)
-            updated += 1
 
         # --- 组合价值快照（仅全量刷新时写，避免分市场刷新覆盖完整快照） ---
         if market == "all":
@@ -498,9 +255,7 @@ def refresh_all_prices(holdings, rates: dict | None = None, market: str = "all")
             today = datetime.now(timezone.utc).date()
 
             holding_values: dict[str, float] = {}
-            for sym, price in all_results.items():
-                if price is None:
-                    continue
+            for sym, price in snapshot_prices.items():
                 h = holding_map.get(sym)
                 if h is None:
                     continue
@@ -541,6 +296,7 @@ def refresh_all_prices(holdings, rates: dict | None = None, market: str = "all")
         return {
             "updated": updated,
             "failed": failed,
+            "stale": stale,
             "errors": errors,
             "market": market,
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),

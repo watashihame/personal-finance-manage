@@ -34,6 +34,7 @@ init_db()
 MARKETS = ["CN", "US", "JP", "CRYPTO", "OTHER"]
 ASSET_TYPES = ["stock", "etf", "fund", "bond", "crypto", "cash", "other"]
 CURRENCIES = ["CNY", "USD", "JPY", "HKD", "EUR", "GBP"]
+ACTIVE_QUANTITY_EPS = 1e-6
 
 MARKET_CURRENCY_DEFAULT = {
     "CN": "CNY",
@@ -137,10 +138,13 @@ def _compute_portfolio(holdings, prices: dict, rates: dict, prev_prices: dict) -
     return rows, total_value, total_cost
 
 
-def _load_portfolio_data():
+def _load_portfolio_data(include_zero: bool = False):
     session = get_session()
     try:
-        holdings = session.execute(select(Holding)).scalars().all()
+        stmt = select(Holding)
+        if not include_zero:
+            stmt = stmt.where(Holding.quantity > ACTIVE_QUANTITY_EPS)
+        holdings = session.execute(stmt).scalars().all()
         price_map = {
             r.symbol: r
             for r in session.execute(select(PriceCache)).scalars().all()
@@ -194,7 +198,9 @@ def api_refresh_prices():
 
     session = get_session()
     try:
-        holdings = session.execute(select(Holding)).scalars().all()
+        holdings = session.execute(
+            select(Holding).where(Holding.quantity > ACTIVE_QUANTITY_EPS)
+        ).scalars().all()
         if not holdings:
             return jsonify({"updated": 0, "failed": 0, "errors": [], "timestamp": "", "market": market})
         rates = fetch_exchange_rates()
@@ -338,9 +344,13 @@ def api_backfill_value_history():
 @app.route("/api/holdings/search")
 def api_holdings_search():
     q = request.args.get("q", "").strip().lower()
+    include_zero = request.args.get("includeZero", "").lower() in {"1", "true", "yes"}
     session = get_session()
     try:
-        holdings = session.execute(select(Holding)).scalars().all()
+        stmt = select(Holding)
+        if not include_zero:
+            stmt = stmt.where(Holding.quantity > ACTIVE_QUANTITY_EPS)
+        holdings = session.execute(stmt).scalars().all()
         results = []
         for h in holdings:
             if not q or q in h.name.lower() or q in h.symbol.lower():
@@ -552,7 +562,8 @@ def api_holdings_list():
 
 @app.route("/api/holdings/<int:holding_id>", methods=["GET"])
 def api_holding_detail(holding_id: int):
-    rows, _, _ = _load_portfolio_data()
+    include_zero = request.args.get("includeZero", "").lower() in {"1", "true", "yes"}
+    rows, _, _ = _load_portfolio_data(include_zero=include_zero)
     r = next((x for x in rows if x["id"] == holding_id), None)
     if r is None:
         return jsonify({"error": "持仓不存在"}), 404

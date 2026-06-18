@@ -9,6 +9,7 @@ const useRoute = () => useContext(window.RouteCtx);
 // Holdings list
 // =============================================================
 function HoldingsPage() {
+  const mobile = window.useIsMobile ? window.useIsMobile() : false;
   const activeHoldings = useMemo(() => HOLDINGS.filter(h => h.quantity > 1e-6), []);
   const allTags = useMemo(() => Array.from(new Set(activeHoldings.flatMap(h => h.tags))).sort(), [activeHoldings]);
   const [tagFilter, setTagFilter] = useState(null);
@@ -70,8 +71,8 @@ function HoldingsPage() {
             {filtered.length} OF {activeHoldings.length} POSITIONS
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input className="input" placeholder="搜索名称或代码…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 220 }} />
+        <div style={{ display: "flex", gap: 8, width: mobile ? "100%" : "auto" }}>
+          <input className="input" placeholder="搜索名称或代码…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: mobile ? "100%" : 220 }} />
           <button className="btn primary sm">+ 添加持仓</button>
         </div>
       </div>
@@ -103,7 +104,7 @@ function HoldingsPage() {
 
       {/* Table */}
       <div className="card">
-        <div style={{ overflowX: "auto" }}>
+        <div className="table-scroll">
         <table className="dtable">
           <thead>
             <tr>
@@ -303,6 +304,7 @@ function FilterChip({ active, onClick, children }) {
 // Trends page
 // =============================================================
 function TrendsPage() {
+  const mobile = window.useIsMobile ? window.useIsMobile() : false;
   const [mode, setMode] = useState("total");
   const [holding, setHolding] = useState(HOLDINGS[0]?.symbol || "");
   const [tag, setTag] = useState(TAG_BUCKETS[0]?.tag || "");
@@ -381,12 +383,12 @@ function TrendsPage() {
           ))}
         </div>
         {mode === "holding" && (
-          <select className="select" value={holding} onChange={e => setHolding(e.target.value)} style={{ minWidth: 280 }}>
+          <select className="select" value={holding} onChange={e => setHolding(e.target.value)} style={{ minWidth: mobile ? 0 : 280, width: mobile ? "100%" : undefined }}>
             {HOLDINGS.filter(h => h.quantity > 1e-6).map(h => <option key={h.symbol} value={h.symbol}>{h.name} ({h.symbol})</option>)}
           </select>
         )}
         {mode === "tag" && (
-          <select className="select" value={tag} onChange={e => setTag(e.target.value)} style={{ minWidth: 200 }}>
+          <select className="select" value={tag} onChange={e => setTag(e.target.value)} style={{ minWidth: mobile ? 0 : 200, width: mobile ? "100%" : undefined }}>
             {TAG_BUCKETS.map(t => <option key={t.tag} value={t.tag}>{t.tag} · {t.value > 1e4 ? (t.value/1e4).toFixed(1)+"万" : t.value.toFixed(0)}</option>)}
           </select>
         )}
@@ -394,7 +396,7 @@ function TrendsPage() {
 
       {/* Stats strip */}
       <div style={{
-        display: "grid", gridTemplateColumns: "repeat(5, 1fr)",
+        display: "grid", gridTemplateColumns: mobile ? "repeat(2, minmax(0, 1fr))" : "repeat(5, 1fr)",
         background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r-3)",
         marginBottom: 14, overflow: "hidden",
       }}>
@@ -482,6 +484,7 @@ window.RangeTabs = RangeTabs;
 // Transactions page
 // =============================================================
 function TransactionsPage({ params }) {
+  const mobile = window.useIsMobile ? window.useIsMobile() : false;
   const initId = params?.holdingId ?? HOLDINGS[0]?.id ?? null;
   const [holdingId, setHoldingId] = useState(initId);
   const [transactions, setTransactions] = useState([]);
@@ -530,7 +533,7 @@ function TransactionsPage({ params }) {
 
   return (
     <PageWrap max={1100}>
-      <div style={{ marginBottom: 16, display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16 }}>
+      <div style={{ marginBottom: 16, display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
         <div>
           <h2 style={{ margin: 0, fontSize: "var(--fs-xl)", fontWeight: 600 }}>交易记录</h2>
           <div className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.08em", marginTop: 2 }}>TRANSACTION LEDGER</div>
@@ -539,14 +542,14 @@ function TransactionsPage({ params }) {
       </div>
 
       <div style={{ display: "flex", gap: 14, marginBottom: 14 }}>
-        <select className="select" value={holdingId} onChange={e => setHoldingId(Number(e.target.value))} style={{ minWidth: 320 }}>
+        <select className="select" value={holdingId} onChange={e => setHoldingId(Number(e.target.value))} style={{ minWidth: mobile ? 0 : 320, width: mobile ? "100%" : undefined }}>
           {HOLDINGS.map(x => <option key={x.id} value={x.id}>{x.name} ({x.symbol})</option>)}
         </select>
       </div>
 
       {/* Holding summary */}
       <div style={{
-        display: "grid", gridTemplateColumns: "repeat(5, 1fr)",
+        display: "grid", gridTemplateColumns: mobile ? "repeat(2, minmax(0, 1fr))" : "repeat(5, 1fr)",
         background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r-3)",
         marginBottom: 14, overflow: "hidden",
       }}>
@@ -562,6 +565,7 @@ function TransactionsPage({ params }) {
         <div className="card-head">
           <span className="title"><span className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.1em" }}>LEDGER</span> <span style={{ marginLeft: 8 }}>{transactions.length} 笔</span></span>
         </div>
+        <div className="table-scroll">
         <table className="dtable">
           <thead>
             <tr>
@@ -607,6 +611,7 @@ function TransactionsPage({ params }) {
             })}
           </tbody>
         </table>
+        </div>
       </div>
 
       {showAdd && h && (
@@ -867,6 +872,7 @@ function BackfillButton() {
 // =============================================================
 function AddHoldingPage() {
   const { navigate } = useRoute?.() || {};
+  const mobile = window.useIsMobile ? window.useIsMobile() : false;
   const [form, setForm] = useState({
     symbol: "", market: "CN", name: "", asset_type: "stock",
     currency: "CNY", quantity: "", cost_price: "", tags: "", notes: "",
@@ -906,9 +912,9 @@ function AddHoldingPage() {
         <h2 style={{ margin: 0, fontSize: "var(--fs-xl)", fontWeight: 600 }}>添加持仓</h2>
         <div className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.08em", marginTop: 2 }}>NEW POSITION</div>
       </div>
-      <div className="card" style={{ padding: 24 }}>
+      <div className="card" style={{ padding: mobile ? 14 : 24 }}>
         <div style={{ display: "grid", gap: 16 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 14 }}>
             <Field label="标的代码" hint={form.asset_type === "cash" ? "现金自动生成代码" : "A股 600519.SH · 美股 AAPL · 日股 7203.T"}>
               <input className="input" placeholder={form.asset_type === "cash" ? `CASH-${form.currency}` : "例如 AAPL"} value={form.symbol}
                 readOnly={form.asset_type === "cash"}
@@ -933,7 +939,7 @@ function AddHoldingPage() {
           <Field label="名称" hint="留空将自动从行情数据获取">
             <input className="input" placeholder="（可自动填充）" value={form.name} onChange={e => set("name", e.target.value)} />
           </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: 14 }}>
             <Field label="资产类型">
               <select className="select" value={form.asset_type} onChange={e => {
                 const t = e.target.value;
@@ -1034,6 +1040,7 @@ function LoginPage({ onLogin }) {
 // Modal primitive
 // =============================================================
 function Modal({ title, children, onClose, width = 480 }) {
+  const mobile = window.useIsMobile ? window.useIsMobile() : false;
   useEffect(() => {
     const onEsc = e => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", onEsc);
@@ -1042,12 +1049,15 @@ function Modal({ title, children, onClose, width = 480 }) {
   return (
     <div style={{
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.32)",
-      display: "flex", alignItems: "center", justifyContent: "center",
+      display: "flex", alignItems: mobile ? "flex-start" : "center", justifyContent: "center",
       zIndex: 200,
       animation: "fadeIn 160ms ease-out",
+      padding: mobile ? "12px" : 0,
+      overflowY: "auto",
     }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{
-        width, maxWidth: "92vw",
+        width, maxWidth: mobile ? "100%" : "92vw",
+        marginTop: mobile ? 24 : 0,
         background: "var(--surface)",
         border: "1px solid var(--border)",
         borderRadius: "var(--r-4)",
@@ -1058,7 +1068,7 @@ function Modal({ title, children, onClose, width = 480 }) {
           <h4 style={{ margin: 0, fontSize: "var(--fs-md)", fontWeight: 600 }}>{title}</h4>
           <button className="btn xs ghost" onClick={onClose} style={{ fontSize: 14 }}>×</button>
         </div>
-        <div style={{ padding: 18 }}>{children}</div>
+        <div style={{ padding: mobile ? 14 : 18 }}>{children}</div>
       </div>
     </div>
   );

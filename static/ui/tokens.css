@@ -190,6 +190,7 @@ html, body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: "cv11", "ss01";
+  overflow-x: hidden;
 }
 
 button { font-family: inherit; }
@@ -291,6 +292,7 @@ code, .mono, .num {
 /* Tables (data-dense) */
 .dtable {
   width: 100%;
+  min-width: 900px;
   border-collapse: collapse;
   font-size: var(--fs-sm);
 }
@@ -312,6 +314,11 @@ code, .mono, .num {
 .dtable td.num, .dtable th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .dtable tbody tr { transition: background var(--transition-fast); }
 .dtable tbody tr:hover { background: var(--surface-hover); }
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 
 /* Layout helpers */
 .row { display: flex; }
@@ -359,4 +366,47 @@ code, .mono, .num {
 :focus-visible {
   outline: 2px solid var(--fg);
   outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  :root {
+    --fs-xl: 18px;
+    --fs-2xl: 24px;
+    --fs-3xl: 30px;
+    --fs-4xl: 36px;
+    --pad-card: 14px;
+    --pad-cell: 8px 10px;
+  }
+
+  body {
+    font-size: var(--fs-sm);
+  }
+
+  .card-head {
+    align-items: flex-start;
+    gap: 8px;
+    padding: 12px 14px;
+  }
+
+  .card-body {
+    padding: 14px;
+  }
+
+  .input, .select {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .btn {
+    min-height: 34px;
+  }
+
+  .dtable {
+    min-width: 760px;
+    font-size: var(--fs-xs);
+  }
+
+  .dtable th, .dtable td {
+    padding: 8px 9px;
+  }
 }

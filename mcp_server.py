@@ -53,6 +53,7 @@ init_db()
 MARKETS = ["CN", "US", "JP", "CRYPTO", "OTHER"]
 ASSET_TYPES = ["stock", "etf", "fund", "bond", "crypto", "cash", "other"]
 CURRENCIES = ["CNY", "USD", "JPY", "HKD", "EUR", "GBP"]
+ACTIVE_QUANTITY_EPS = 1e-6
 
 mcp = FastMCP(
     name="portfolio-tracker",
@@ -60,6 +61,7 @@ mcp = FastMCP(
         "Personal investment portfolio tracker. Tracks holdings across A-shares (CN), "
         "US stocks, Japanese stocks (JP), and cryptocurrencies (CRYPTO). "
         "All monetary totals are in CNY (Chinese Yuan) unless a currency field says otherwise. "
+        "Read tools return active holdings only by default (quantity > 1e-6). "
         "Call search_holdings first to find holding IDs before calling update/delete tools."
     ),
     host=os.environ.get("MCP_HOST", "127.0.0.1"),
@@ -128,10 +130,13 @@ def _compute_portfolio(holdings, prices: dict, rates: dict) -> tuple[list[dict],
     return rows, total_value, total_cost
 
 
-def _load_portfolio_data() -> tuple[list[dict], float, float]:
+def _load_portfolio_data(include_zero: bool = False) -> tuple[list[dict], float, float]:
     session = get_session()
     try:
-        holdings = session.execute(select(Holding)).scalars().all()
+        stmt = select(Holding)
+        if not include_zero:
+            stmt = stmt.where(Holding.quantity > ACTIVE_QUANTITY_EPS)
+        holdings = session.execute(stmt).scalars().all()
         price_map = {
             r.symbol: r
             for r in session.execute(select(PriceCache)).scalars().all()
@@ -152,7 +157,7 @@ def _load_portfolio_data() -> tuple[list[dict], float, float]:
 
 @mcp.resource("portfolio://summary")
 def resource_portfolio_summary() -> str:
-    """Current portfolio totals: total market value (CNY), cost, P&L, and per-holding breakdown."""
+    """Current active portfolio totals: total market value (CNY), cost, P&L, and per-holding breakdown."""
     rows, total_value, total_cost = _load_portfolio_data()
     total_pnl = total_value - total_cost
     total_pnl_pct = (total_pnl / total_cost * 100) if total_cost else 0.0
@@ -168,7 +173,7 @@ def resource_portfolio_summary() -> str:
 
 @mcp.resource("portfolio://holdings")
 def resource_holdings_list() -> str:
-    """Complete list of all holdings with current prices, market values (CNY), P&L, and tags."""
+    """Active holdings with current prices, market values (CNY), P&L, and tags."""
     rows, _, _ = _load_portfolio_data()
     return json.dumps(rows, ensure_ascii=False, indent=2)
 
@@ -181,7 +186,8 @@ def resource_holdings_list() -> str:
 def get_portfolio_summary() -> str:
     """
     Get the full portfolio summary: total market value (CNY), total cost, overall P&L,
-    and a complete per-holding breakdown sorted by market value descending.
+    and an active per-holding breakdown sorted by market value descending.
+    Holdings with quantity <= 1e-6 are treated as closed and omitted.
     """
     try:
         rows, total_value, total_cost = _load_portfolio_data()
@@ -251,16 +257,20 @@ def get_portfolio_market(
 
 
 @mcp.tool()
-def search_holdings(q: str = "") -> str:
+def search_holdings(q: str = "", include_zero: bool = False) -> str:
     """
     Search holdings by name or symbol (case-insensitive substring match).
-    Pass an empty string to list all holdings.
+    Pass an empty string to list active holdings. Closed holdings with quantity <= 1e-6
+    are omitted by default; pass include_zero=True only when you need historical/closed holdings.
     Returns id, name, symbol, market, asset_type, currency, quantity, cost_price, tags.
     """
     try:
         session = get_session()
         try:
-            holdings = session.execute(select(Holding)).scalars().all()
+            stmt = select(Holding)
+            if not include_zero:
+                stmt = stmt.where(Holding.quantity > ACTIVE_QUANTITY_EPS)
+            holdings = session.execute(stmt).scalars().all()
             q_lower = q.strip().lower()
             results = [
                 {
@@ -286,13 +296,15 @@ def search_holdings(q: str = "") -> str:
 
 
 @mcp.tool()
-def get_holding_detail(holding_id: int) -> str:
+def get_holding_detail(holding_id: int, include_zero: bool = False) -> str:
     """
     Get full detail for one holding: current price/value/P&L, tags, plus all transactions
     and the last 60 days of price history (sparkline). Use search_holdings first to find the ID.
+    Closed holdings with quantity <= 1e-6 are omitted by default; pass include_zero=True
+    only when you need historical/closed holdings.
     """
     try:
-        rows, _, _ = _load_portfolio_data()
+        rows, _, _ = _load_portfolio_data(include_zero=include_zero)
         row = next((r for r in rows if r["id"] == holding_id), None)
         if row is None:
             return json.dumps({"ok": False, "error": f"Holding {holding_id} not found"}, ensure_ascii=False)
@@ -523,7 +535,7 @@ def add_holding(
 ) -> str:
     """
     Add a new investment holding to the portfolio.
-    Symbol format: A-shares '600519.SH'/'000001.SZ', US stocks 'AAPL', JP stocks '7203.T', crypto 'BTC-USD'.
+    Symbol format: A-shares '600519.SH'/'000001.SZ', US stocks 'AAPL', JP stocks '7203.T' or '200A.JP', crypto 'BTC-USD'.
     tags: comma-separated string, e.g. '科技,长期持有'.
     """
     try:
@@ -1004,8 +1016,8 @@ def refresh_prices(
     """
     Trigger a live price refresh from market data sources. Data sources run in
     parallel (Tushare for A-shares, eastmoney for CN funds, yfinance for
-    US/JP/crypto, ICBC scraper for gold). US stocks that yfinance fails to
-    fetch fall back to Tushare us_daily (T-1 close, source="tushare-us").
+    US/JP/crypto, ICBC scraper for gold). Tushare us_daily is intentionally
+    disabled because the configured token does not include that endpoint.
     Also refreshes exchange rates. Holdings with manual price overrides are
     skipped.
 

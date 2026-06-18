@@ -2,6 +2,7 @@
 // Real-API backed data layer. No mock data.
 
 const FX = { CNY: 1, USD: 7.25, JPY: 0.048, HKD: 0.93, EUR: 7.8, GBP: 9.1 };
+const ACTIVE_QUANTITY_EPS = 1e-6;
 
 function computeRow(h) {
   const isCash = h.type === "cash" || h.asset_type === "cash" || h.assetType === "cash";
@@ -12,6 +13,10 @@ function computeRow(h) {
   const pnlCny   = h.pnlCny   ?? (valueCny - costCny);
   const pnlPct   = h.pnlPct   ?? (costCny > 0 ? (pnlCny / costCny) * 100 : 0);
   return { ...h, currentPrice: price, valueCny, costCny, pnlCny, pnlPct };
+}
+
+function isActiveHolding(h) {
+  return Number(h.quantity || 0) > ACTIVE_QUANTITY_EPS;
 }
 
 const fmt = {
@@ -77,7 +82,7 @@ async function initFromAPI() {
 
   Object.assign(FX, rates);
 
-  HOLDINGS        = holdings;
+  HOLDINGS        = holdings.filter(isActiveHolding);
   TOTAL_VALUE     = portfolio.totalValueCny;
   TOTAL_COST      = portfolio.totalCostCny;
   TOTAL_PNL       = portfolio.totalPnlCny;
@@ -128,4 +133,4 @@ function _syncWindow() {
 
 _syncWindow();
 
-Object.assign(window, { computeRow, fmt, MARKET_LABEL, TX_TYPE_ZH, initFromAPI, marketBreakdown });
+Object.assign(window, { computeRow, fmt, MARKET_LABEL, TX_TYPE_ZH, initFromAPI, marketBreakdown, isActiveHolding });

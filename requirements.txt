@@ -3,7 +3,8 @@ SQLAlchemy==2.0.36
 psycopg2-binary==2.9.10
 yfinance==0.2.54
 tushare
-requests==2.32.3
+akshare
+requests[socks]==2.32.3
 gunicorn==23.0.0
 mcp[cli]>=1.26.0
 beautifulsoup4

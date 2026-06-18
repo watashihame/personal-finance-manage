@@ -61,8 +61,13 @@ function MarketStrip({ holdings, compact = false }) {
 }
 
 function PageWrap({ children, max = 1400 }) {
+  const mobile = window.useIsMobile ? window.useIsMobile() : false;
   return (
-    <div className="page-enter" style={{ maxWidth: max, margin: "0 auto", padding: "24px 24px 32px" }}>
+    <div className="page-enter" style={{
+      maxWidth: max,
+      margin: "0 auto",
+      padding: mobile ? "12px 10px 20px" : "24px 24px 32px",
+    }}>
       {children}
     </div>
   );
@@ -247,6 +252,7 @@ function HoldingsPreviewTable() {
         <span className="title">持仓概览 <span style={{ color: "var(--fg-3)", fontWeight: 400, marginLeft: 6 }}>前 8 项</span></span>
         <button className="btn sm ghost">查看全部 {HOLDINGS.length} 项 →</button>
       </div>
+      <div className="table-scroll">
       <table className="dtable">
         <thead>
           <tr>
@@ -285,6 +291,7 @@ function HoldingsPreviewTable() {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -293,13 +300,14 @@ function HoldingsPreviewTable() {
 // VARIANT B — Standard terminal. Tighter, monospace headers, grid lines.
 // =============================================================
 function DashboardB() {
+  const mobile = window.useIsMobile ? window.useIsMobile() : false;
   const dayUp = DAY_PNL >= 0;
   const totalUp = TOTAL_PNL >= 0;
   const palette = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)", "var(--cat-4)", "var(--cat-5)", "var(--cat-6)", "var(--cat-7)", "var(--cat-8)"];
   const top = marketBreakdown(HOLDINGS).map(b => ({ label: MARKET_LABEL[b.market], value: b.valueCny }));
 
   return (
-    <div className="page-enter" style={{ padding: "16px 20px 24px" }}>
+    <div className="page-enter" style={{ padding: mobile ? "12px 10px 20px" : "16px 20px 24px" }}>
       {/* Top metrics strip */}
       <div style={{
         border: "1px solid var(--border)",
@@ -309,9 +317,10 @@ function DashboardB() {
         overflow: "hidden",
       }}>
         <div style={{
-          display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr",
+          display: "grid",
+          gridTemplateColumns: mobile ? "repeat(2, minmax(0, 1fr))" : "1.4fr 1fr 1fr 1fr 1fr",
         }}>
-          <BMetric label="总资产 · CNY" value={fmt.cny(TOTAL_VALUE, 2)} hero />
+          <BMetric label="总资产 · CNY" value={fmt.cny(TOTAL_VALUE, 2)} hero span={mobile ? 2 : 1} />
           <BMetric label="今日盈亏" value={fmt.signed(DAY_PNL, 2)} sub={fmt.pct(DAY_PNL_PCT)} color={dayUp ? "up" : "down"} />
           <BMetric label="累计盈亏" value={fmt.signed(TOTAL_PNL, 2)} sub={fmt.pct(TOTAL_PNL_PCT)} color={totalUp ? "up" : "down"} />
           <BMetric label="总成本" value={fmt.cny(TOTAL_COST, 0)} sub={`${HOLDINGS.length} 项持仓`} />
@@ -322,7 +331,7 @@ function DashboardB() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 14, marginBottom: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1.6fr 1fr", gap: 14, marginBottom: 14 }}>
         {/* NAV chart */}
         <div className="card">
           <div className="card-head" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
@@ -333,7 +342,7 @@ function DashboardB() {
             <RangeTabs />
           </div>
           <div style={{ padding: "8px 12px 12px" }}>
-            <LineChart data={HISTORY.slice(-90)} height={220} markers={PORTFOLIO_TRANSACTIONS.filter(t => !(t.isCash && t.counterpartySymbol))} />
+            <LineChart data={HISTORY.slice(-90)} height={mobile ? 180 : 220} markers={PORTFOLIO_TRANSACTIONS.filter(t => !(t.isCash && t.counterpartySymbol))} />
           </div>
         </div>
 
@@ -346,13 +355,13 @@ function DashboardB() {
             </span>
           </div>
           <div className="card-body" style={{ display: "flex", justifyContent: "center", padding: "8px 14px 14px" }}>
-            <DonutChart data={top} size={200} thickness={22} palette={palette} />
+            <DonutChart data={top} size={mobile ? 168 : 200} thickness={mobile ? 18 : 22} palette={palette} />
           </div>
         </div>
       </div>
 
       {/* Watchlist + tags */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: 14, marginBottom: 14 }}>
         <div className="card">
           <div className="card-head"><span className="title"><span className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.1em" }}>GAINERS</span><span style={{ marginLeft: 8 }}>盈利领先</span></span></div>
           <BList rows={TOP_GAINERS} />
@@ -375,11 +384,13 @@ function DashboardB() {
   );
 }
 
-function BMetric({ label, value, sub, color, hero }) {
+function BMetric({ label, value, sub, color, hero, span = 1 }) {
   return (
     <div style={{
       padding: hero ? "16px 20px" : "16px 18px",
       borderRight: "1px solid var(--border-subtle)",
+      gridColumn: span > 1 ? `span ${span}` : undefined,
+      minWidth: 0,
     }}>
       <div className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6 }}>
         {label}
@@ -531,6 +542,7 @@ function DashboardC() {
       {/* Holdings dense table */}
       <div className="card" style={{ borderRadius: "var(--r-2)" }}>
         <CHeader title="HOLDINGS" sub={`${HOLDINGS.length} positions · sorted by market value`} />
+        <div className="table-scroll">
         <table className="dtable" style={{ fontSize: "var(--fs-xs)" }}>
           <thead>
             <tr>
@@ -560,8 +572,9 @@ function DashboardC() {
               </tr>
             ))}
           </tbody>
-        </table>
+      </table>
       </div>
+    </div>
     </div>
   );
 }
