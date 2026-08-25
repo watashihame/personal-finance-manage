@@ -227,7 +227,7 @@ ALTER TABLE holdings ADD COLUMN tags VARCHAR(200) DEFAULT '';
 | `/api/refresh-prices` | POST | 刷新行情 + 汇率，支持 `?market=all\|cn\|us\|jp\|crypto`（默认 `all`） |
 | `/api/override-price` | POST | 手动设置价格 |
 | `/api/clear-override` | POST | 清除手动价格 |
-| `/api/price-history/<symbol>` | GET | 获取某标的历史价格 |
+| `/api/price-history/<symbol>` | GET | 获取某标的历史价格及移动平均线 MA（`?ma=5,20,60`） |
 | `/api/portfolio-value-history` | GET | 获取组合历史净值（每日快照） |
 | `/api/holding-value-history/<symbol>` | GET | 获取某持仓历史市值 |
 | `/api/tag-value-history/<tag>` | GET | 获取某标签下历史市值 |
@@ -364,7 +364,7 @@ networks:
 | `list_transactions` | 查看某持仓的全部交易记录 |
 | `get_tags` | 各标签的市值合计与占比 |
 | `get_exchange_rates` | 当前缓存汇率（USD/JPY/HKD 等对 CNY） |
-| `get_price_history` | 某标的的全部历史价格 |
+| `get_price_history` | 某标的的全部历史价格及移动平均线 MA（参数 `ma="5,10,20,60"`） |
 | `get_portfolio_value_history` | 组合每日净值时间序列 |
 | `get_holding_value_history` | 单个持仓的每日市值时间序列 |
 | `get_tag_value_history` | 单个标签下的每日市值时间序列 |

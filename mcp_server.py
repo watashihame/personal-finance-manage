@@ -36,6 +36,7 @@ from models import (
     init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate,
     PriceHistory, PortfolioValueHistory, recalculate_holding, compute_realized_pnl,
     find_paired_transaction, create_paired_transaction, apply_counterparty,
+    parse_ma_periods, compute_moving_averages,
 )
 from price_fetcher import (
     refresh_all_prices,
@@ -438,15 +439,22 @@ def get_tags() -> str:
 
 
 @mcp.tool()
-def get_price_history(symbol: str) -> str:
+def get_price_history(symbol: str, ma: str = "5,10,20,60") -> str:
     """
     Get the full daily price history for a symbol from the price_history table
-    (populated by refresh_prices runs). Returns dates and prices in chronological order.
+    (populated by refresh_prices runs). Returns dates and prices in chronological order,
+    plus simple moving averages (SMA).
+
+    ma: comma-separated window sizes for the moving averages, e.g. "5,20,60"
+        (default "5,10,20,60"). Pass "" to skip moving averages.
+        The returned "ma" maps each window to a list aligned with dates/prices;
+        positions with fewer than `window` prior points are null.
     """
     try:
         symbol = symbol.strip().upper()
         if not symbol:
             return json.dumps({"ok": False, "error": "symbol is required"}, ensure_ascii=False)
+        periods = parse_ma_periods(ma, default=()) if ma.strip() else []
         session = get_session()
         try:
             rows = session.execute(
@@ -454,11 +462,14 @@ def get_price_history(symbol: str) -> str:
                 .where(PriceHistory.symbol == symbol)
                 .order_by(PriceHistory.date)
             ).scalars().all()
+            prices = [r.price for r in rows]
+            ma_series = compute_moving_averages(prices, periods)
             return json.dumps({
                 "symbol": symbol,
                 "currency": rows[-1].currency if rows else "",
                 "dates": [r.date.isoformat() for r in rows],
-                "prices": [r.price for r in rows],
+                "prices": prices,
+                "ma": {f"MA{w}": ma_series[w] for w in periods},
             }, ensure_ascii=False, indent=2)
         finally:
             session.close()

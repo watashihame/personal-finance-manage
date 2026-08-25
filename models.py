@@ -312,6 +312,48 @@ def apply_counterparty(session, tx, new_cp_id, new_cp_unit_price):
     return affected, paired
 
 
+def parse_ma_periods(raw, default=(5, 10, 20, 60)) -> "list[int]":
+    """把 "5,20,60" 这样的字符串解析成去重的正整数窗口列表。
+
+    非法/空输入时返回 default。用于 HTTP query 参数和 MCP 工具参数。
+    """
+    if raw is None or raw == "":
+        return list(default)
+    out: list[int] = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if part.isdigit():
+            v = int(part)
+            if v > 0 and v not in out:
+                out.append(v)
+    return out or list(default)
+
+
+def compute_moving_averages(prices, periods) -> "dict[int, list]":
+    """对按日期升序的价格序列计算多条简单移动平均线（SMA）。
+
+    prices : 价格列表（已按日期升序）。
+    periods: 窗口长度列表，如 [5, 20]。
+    返回 {window: [ma_or_None, ...]}，每条序列长度与 prices 对齐；
+    数据不足一个完整窗口的前置位置为 None（便于与 dates/prices 对齐画图）。
+    用前缀和做到 O(n) 计算。
+    """
+    n = len(prices)
+    prefix = [0.0] * (n + 1)
+    for i, p in enumerate(prices):
+        prefix[i + 1] = prefix[i] + p
+
+    result: dict[int, list] = {}
+    for w in periods:
+        if w <= 0:
+            continue
+        series: list = [None] * n
+        for i in range(w - 1, n):
+            series[i] = (prefix[i + 1] - prefix[i + 1 - w]) / w
+        result[w] = series
+    return result
+
+
 def init_db():
     Base.metadata.create_all(engine)
     # Migration: add counterparty_id if missing (added 2026-05)

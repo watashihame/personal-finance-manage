@@ -12,6 +12,7 @@ from models import (
     init_db, get_session, Holding, Transaction, PriceCache, ExchangeRate,
     PriceHistory, PortfolioValueHistory, recalculate_holding, compute_realized_pnl,
     find_paired_transaction, create_paired_transaction, apply_counterparty,
+    parse_ma_periods, compute_moving_averages,
 )
 from price_fetcher import (
     refresh_all_prices,
@@ -249,7 +250,14 @@ def api_portfolio_data():
 
 @app.route("/api/price-history/<symbol>")
 def api_price_history(symbol: str):
+    """日线价格历史，并附带简单移动平均线（SMA）。
+
+    query 参数 ma：逗号分隔的窗口，如 ?ma=5,20,60（默认 5,10,20,60）。
+    返回的 ma 是 {"MA5": [...], ...}，每条与 dates/prices 等长，
+    数据不足窗口的前置位置为 null。
+    """
     symbol = symbol.upper()
+    periods = parse_ma_periods(request.args.get("ma"))
     session_db = get_session()
     try:
         rows = session_db.execute(
@@ -257,11 +265,14 @@ def api_price_history(symbol: str):
             .where(PriceHistory.symbol == symbol)
             .order_by(PriceHistory.date)
         ).scalars().all()
+        prices = [r.price for r in rows]
+        ma = compute_moving_averages(prices, periods)
         return jsonify({
             "symbol": symbol,
             "dates": [r.date.isoformat() for r in rows],
-            "prices": [r.price for r in rows],
+            "prices": prices,
             "currency": rows[-1].currency if rows else "",
+            "ma": {f"MA{w}": ma[w] for w in periods},
         })
     finally:
         session_db.close()
